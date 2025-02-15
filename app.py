@@ -155,21 +155,25 @@ def process_sales_master(df):
     for col in date_columns:
         df[col] = pd.to_datetime(df[col], errors='coerce')
     
-    # Clean numeric columns
+    # Clean numeric columns - shorter column names
     numeric_columns = [
-        'Area(sqft) (A)', 'Basic Price', 'BSP/SqFt', 
-        'Total Consideration (F = C+D+E)', 'Amount Demanded',
-        'Amount received as on 31.01.2025', 'Balance receivables (on total sales)'
+        'Area(sqft)', 'Basic Price', 'BSP/SqFt', 
+        'Total Consideration', 'Amount Demanded',
+        'Amount received', 'Balance receivables'
     ]
     
-    for col in numeric_columns:
-        if col in df.columns:
-            df[col] = pd.to_numeric(df[col], errors='coerce')
+    for col in df.columns:
+        for num_col in numeric_columns:
+            if num_col in col:  # Match partial names
+                df[col] = pd.to_numeric(df[col], errors='coerce')
     
     # Calculate collection percentage
-    if 'Amount received as on 31.01.2025' in df.columns and 'Amount Demanded' in df.columns:
+    collection_col = [col for col in df.columns if 'Amount received' in col][0]
+    demanded_col = [col for col in df.columns if 'Amount Demanded' in col][0]
+    
+    if collection_col and demanded_col:
         df['Collection Percentage'] = (
-            df['Amount received as on 31.01.2025'] / df['Amount Demanded'] * 100
+            df[collection_col] / df[demanded_col] * 100
         ).clip(0, 100)
     
     return df
@@ -278,7 +282,8 @@ def main():
                 )
 
             with col2:
-                total_consideration = st.session_state.sales_master_df['Total Consideration (F = C+D+E)'].sum()
+                consideration_col = [col for col in st.session_state.sales_master_df.columns if 'Total Consideration' in col][0]
+                total_consideration = st.session_state.sales_master_df[consideration_col].sum()
                 st.metric(
                     "Total Consideration",
                     format_currency(total_consideration),
