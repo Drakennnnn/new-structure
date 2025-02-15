@@ -139,16 +139,31 @@ def process_sales_master(df):
     df['Booking date'] = pd.to_datetime(df['Booking date'], errors='coerce')
     df['Agreement date'] = pd.to_datetime(df['Agreement date'], errors='coerce')
     
-    # Clean numeric columns
-    numeric_columns = ['Area(sqft) (A)', 'Basic Price', 'BSP/SqFt', 'Total Consideration (F = C+D+E)',
-                      'Amount Demanded', 'Amount received as on 31.01.2025']
-    for col in numeric_columns:
-        if col in df.columns:
-            df[col] = pd.to_numeric(df[col], errors='coerce')
+    # First check what columns we actually have
+    st.write("Debug - Available columns:", df.columns.tolist())
     
-    # Calculate collection percentage
-    df['Collection Percentage'] = (df['Amount received as on 31.01.2025'] / 
-                                 df['Amount Demanded'] * 100).clip(0, 100)
+    # Clean numeric columns - using more flexible column matching
+    amount_demanded_col = [col for col in df.columns if 'Amount Demanded' in col][0]
+    amount_received_col = [col for col in df.columns if 'Amount received' in col][0]
+    
+    numeric_columns = {
+        'Area(sqft) (A)': 'Area',
+        'Basic Price': 'Basic Price',
+        'BSP/SqFt': 'BSP/SqFt',
+        'Total Consideration (F = C+D+E)': 'Total Consideration',
+        amount_demanded_col: 'Amount Demanded',
+        amount_received_col: 'Amount Received'
+    }
+    
+    # Process each numeric column if it exists
+    for old_col, new_col in numeric_columns.items():
+        if old_col in df.columns:
+            df[new_col] = pd.to_numeric(df[old_col], errors='coerce')
+    
+    # Calculate collection percentage using new column names
+    if 'Amount Demanded' in df.columns and 'Amount Received' in df.columns:
+        df['Collection Percentage'] = (df['Amount Received'] / 
+                                     df['Amount Demanded'] * 100).clip(0, 100)
     
     return df
 
