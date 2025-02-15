@@ -22,13 +22,13 @@ COLORS = {
 
 # Set page configuration
 st.set_page_config(
-    page_title="Real Estate Project Management Dashboard",
+    page_title="Real Estate Analytics Dashboard",
     page_icon="🏢",
     layout="wide",
     initial_sidebar_state="expanded"
 )
 
-# Custom CSS with dark theme (keeping the same styling)
+# Custom CSS with dark theme
 st.markdown("""
     <style>
     .main { 
@@ -85,36 +85,52 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-def process_collection_account(df, phase_row_indices):
-    """Process collection account data with phase information"""
+def get_phase_sections(df):
+    """Identify phase sections in collection account data"""
+    phase_markers = []
+    current_phase = None
+    phases = {}
+    
+    for idx, row in df.iterrows():
+        desc = str(row['Description']).strip()
+        if 'Main Collection Escrow A/c Phase-' in desc:
+            if current_phase:
+                phases[current_phase]['end'] = idx - 1
+            current_phase = desc
+            phases[current_phase] = {'start': idx + 1}
+            phase_markers.append(idx)
+    
+    # Set end for last phase
+    if current_phase:
+        phases[current_phase]['end'] = len(df)
+    
+    return phases
+
+def process_collection_account(df):
+    """Process collection account data"""
     df = df.copy()
     
     # Convert date columns
     df['Txn Date'] = pd.to_datetime(df['Txn Date'], format='%d/%m/%Y %H:%M:%S', errors='coerce')
     df['Value Date'] = pd.to_datetime(df['Value Date'], format='%d/%m/%Y', errors='coerce')
     
-    # Add phase information
-    df['Phase'] = 'Unknown'
-    current_phase = None
-    for idx, row in df.iterrows():
-        if idx in phase_row_indices:
-            current_phase = row['Description']
-        df.at[idx, 'Phase'] = current_phase
-    
     # Process amounts
     df['Amount'] = pd.to_numeric(df['Amount'], errors='coerce')
-    df['Running Total'] = pd.to_numeric(df['Running Total'], errors='coerce')
     
-    # Create transaction type
-    df['Transaction Type'] = df.apply(lambda x: categorize_transaction(x['Description']), axis=1)
+    # Categorize transactions
+    df['Payment Mode'] = df['Description'].apply(categorize_transaction)
     
     # Extract unit info from Sales Tag
-    df['Unit_Info'] = df['Sales Tag'].fillna('')
+    df['Unit'] = df['Sales Tag'].fillna('').str.strip()
+    
+    # Calculate running balance
+    df['Running Balance'] = df.apply(lambda x: 
+        x['Amount'] if x['Dr/Cr'] == 'C' else -x['Amount'], axis=1).cumsum()
     
     return df
 
 def categorize_transaction(description):
-    """Categorize transactions based on description"""
+    """Categorize payment modes"""
     description = str(description).upper()
     if any(word in description for word in ['CHQ', 'CHEQUE', 'MICR']):
         return 'Cheque'
@@ -128,42 +144,33 @@ def categorize_transaction(description):
         return 'IMPS'
     elif 'TRANSFER' in description:
         return 'Transfer'
-    else:
-        return 'Other'
+    return 'Other'
 
 def process_sales_master(df):
     """Process sales master data"""
     df = df.copy()
     
     # Convert dates
-    df['Booking date'] = pd.to_datetime(df['Booking date'], errors='coerce')
-    df['Agreement date'] = pd.to_datetime(df['Agreement date'], errors='coerce')
+    date_columns = ['Booking date', 'Agreement date']
+    for col in date_columns:
+        df[col] = pd.to_datetime(df[col], errors='coerce')
     
-    # First check what columns we actually have
-    st.write("Debug - Available columns:", df.columns.tolist())
+    # Clean numeric columns
+    numeric_columns = [
+        'Area(sqft) (A)', 'Basic Price', 'BSP/SqFt', 
+        'Total Consideration (F = C+D+E)', 'Amount Demanded',
+        'Amount received as on 31.01.2025', 'Balance receivables (on total sales)'
+    ]
     
-    # Clean numeric columns - using more flexible column matching
-    amount_demanded_col = [col for col in df.columns if 'Amount Demanded' in col][0]
-    amount_received_col = [col for col in df.columns if 'Amount received' in col][0]
+    for col in numeric_columns:
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors='coerce')
     
-    numeric_columns = {
-        'Area(sqft) (A)': 'Area',
-        'Basic Price': 'Basic Price',
-        'BSP/SqFt': 'BSP/SqFt',
-        'Total Consideration (F = C+D+E)': 'Total Consideration',
-        amount_demanded_col: 'Amount Demanded',
-        amount_received_col: 'Amount Received'
-    }
-    
-    # Process each numeric column if it exists
-    for old_col, new_col in numeric_columns.items():
-        if old_col in df.columns:
-            df[new_col] = pd.to_numeric(df[old_col], errors='coerce')
-    
-    # Calculate collection percentage using new column names
-    if 'Amount Demanded' in df.columns and 'Amount Received' in df.columns:
-        df['Collection Percentage'] = (df['Amount Received'] / 
-                                     df['Amount Demanded'] * 100).clip(0, 100)
+    # Calculate collection percentage
+    if 'Amount received as on 31.01.2025' in df.columns and 'Amount Demanded' in df.columns:
+        df['Collection Percentage'] = (
+            df['Amount received as on 31.01.2025'] / df['Amount Demanded'] * 100
+        ).clip(0, 100)
     
     return df
 
@@ -172,20 +179,17 @@ def process_unsold_inventory(df):
     df = df.copy()
     
     # Clean area column
-    df['Saleable area (sq. ft.)'] = pd.to_numeric(df['Saleable area (sq. ft.)'], errors='coerce')
+    if 'Saleable area (sq. ft.)' in df.columns:
+        df['Saleable area (sq. ft.)'] = pd.to_numeric(df['Saleable area (sq. ft.)'], errors='coerce')
     
     return df
 
-def get_phase_row_indices(df):
-    """Get row indices where phase information starts"""
-    phase_rows = []
-    for idx, row in df.iterrows():
-        if isinstance(row['Description'], str) and 'Phase' in row['Description']:
-            phase_rows.append(idx)
-    return phase_rows
+def format_currency(value):
+    """Format currency values"""
+    return f"₹{value:,.2f}"
 
 def main():
-    st.title("Real Estate Project Management Dashboard")
+    st.title("Real Estate Analytics Dashboard")
     st.markdown("---")
 
     # Initialize session state
@@ -212,16 +216,26 @@ def main():
                     st.stop()
 
                 # Process Collection Account
-                collection_df = pd.read_excel(excel_file, 'Main Collection AC P1_P2_P3', skiprows=1)
-                phase_rows = get_phase_row_indices(collection_df)
-                collection_df = process_collection_account(collection_df, phase_rows)
+                collection_df = pd.read_excel(
+                    excel_file, 
+                    'Main Collection AC P1_P2_P3',
+                    skiprows=1
+                )
+                collection_df = process_collection_account(collection_df)
 
                 # Process Sales Master
-                sales_master_df = pd.read_excel(excel_file, 'Annex - Sales Master', skiprows=3)
+                sales_master_df = pd.read_excel(
+                    excel_file,
+                    'Annex - Sales Master',
+                    skiprows=3
+                )
                 sales_master_df = process_sales_master(sales_master_df)
 
                 # Process Unsold Inventory
-                unsold_df = pd.read_excel(excel_file, 'Un Sold Inventory')
+                unsold_df = pd.read_excel(
+                    excel_file,
+                    'Un Sold Inventory'
+                )
                 unsold_df = process_unsold_inventory(unsold_df)
 
                 # Store in session state
@@ -229,6 +243,9 @@ def main():
                 st.session_state.collection_df = collection_df
                 st.session_state.sales_master_df = sales_master_df
                 st.session_state.unsold_df = unsold_df
+                
+                # Get phase information
+                st.session_state.phase_sections = get_phase_sections(collection_df)
 
                 st.success("Data loaded successfully!")
 
@@ -237,8 +254,13 @@ def main():
             st.stop()
 
     if st.session_state.data_loaded:
-        # Top level tabs
-        tab1, tab2, tab3 = st.tabs(["Project Overview", "Collection Analysis", "Sales Status"])
+        # Main tabs
+        tab1, tab2, tab3, tab4 = st.tabs([
+            "Project Overview",
+            "Collection Analysis",
+            "Sales Status",
+            "Unit Details"
+        ])
 
         with tab1:
             st.markdown("### Project Overview")
@@ -247,88 +269,216 @@ def main():
             col1, col2, col3, col4 = st.columns(4)
             
             with col1:
-                total_collection = st.session_state.collection_df[
-                    st.session_state.collection_df['Dr/Cr'] == 'C'
-                ]['Amount'].sum()
-                st.metric(
-                    "Total Collections",
-                    f"₹{total_collection:,.2f}",
-                    delta="View Details"
-                )
-
-            with col2:
                 total_units = len(st.session_state.sales_master_df)
                 unsold_units = len(st.session_state.unsold_df)
                 st.metric(
-                    "Total Units Sold",
+                    "Total Units",
                     f"{total_units}",
                     delta=f"{unsold_units} Unsold"
                 )
 
-            with col3:
-                avg_collection = st.session_state.sales_master_df['Collection Percentage'].mean()
+            with col2:
+                total_consideration = st.session_state.sales_master_df['Total Consideration (F = C+D+E)'].sum()
                 st.metric(
-                    "Average Collection %",
-                    f"{avg_collection:.1f}%",
+                    "Total Consideration",
+                    format_currency(total_consideration),
                     delta="View Details"
                 )
 
-            with col4:
-                recent_transactions = len(st.session_state.collection_df[
-                    st.session_state.collection_df['Txn Date'] > 
-                    (datetime.now() - timedelta(days=30))
-                ])
+            with col3:
+                total_collection = st.session_state.sales_master_df['Amount received as on 31.01.2025'].sum()
+                collection_percentage = (total_collection / total_consideration * 100)
                 st.metric(
-                    "Recent Transactions",
-                    f"{recent_transactions}",
-                    delta="Last 30 days"
+                    "Collection Achievement",
+                    f"{collection_percentage:.1f}%",
+                    delta=format_currency(total_consideration - total_collection)
+                )
+
+            with col4:
+                total_area = st.session_state.sales_master_df['Area(sqft) (A)'].sum()
+                st.metric(
+                    "Total Area",
+                    f"{total_area:,.0f} sq.ft",
+                    delta=f"{unsold_units/total_units*100:.1f}% unsold"
                 )
 
             # Phase-wise collection summary
             st.markdown("### Phase-wise Collection Summary")
-            phase_summary = st.session_state.collection_df[
-                st.session_state.collection_df['Dr/Cr'] == 'C'
-            ].groupby('Phase')['Amount'].sum().reset_index()
             
-            fig_phase = px.bar(
-                phase_summary,
-                x='Phase',
-                y='Amount',
-                title="Collections by Phase",
-                color='Amount',
-                color_continuous_scale='Blues'
-            )
-            fig_phase.update_layout(
-                plot_bgcolor='rgba(0,0,0,0)',
-                paper_bgcolor='rgba(0,0,0,0)',
-                font_color='#ffffff'
-            )
-            st.plotly_chart(fig_phase, use_container_width=True)
-
-            # Transaction Type Analysis
+            # Get phase-wise totals
+            phase_summary = []
+            for phase, indices in st.session_state.phase_sections.items():
+                phase_data = st.session_state.collection_df.iloc[
+                    indices['start']:indices['end']
+                ]
+                credits = phase_data[phase_data['Dr/Cr'] == 'C']['Amount'].sum()
+                debits = phase_data[phase_data['Dr/Cr'] == 'D']['Amount'].sum()
+                
+                phase_summary.append({
+                    'Phase': phase,
+                    'Credits': credits,
+                    'Debits': debits,
+                    'Net': credits - debits,
+                    'Last Balance': phase_data['Running Balance'].iloc[-1]
+                    if len(phase_data) > 0 else 0
+                })
+            
+            phase_summary_df = pd.DataFrame(phase_summary)
+            
+            # Show phase summary
             col1, col2 = st.columns(2)
             
             with col1:
-                transaction_summary = st.session_state.collection_df[
-                    st.session_state.collection_df['Dr/Cr'] == 'C'
-                ].groupby('Transaction Type')['Amount'].sum().reset_index()
-                
-                fig_trans = px.pie(
-                    transaction_summary,
-                    values='Amount',
-                    names='Transaction Type',
-                    title="Collection by Payment Mode"
+                fig_phase = px.bar(
+                    phase_summary_df,
+                    x='Phase',
+                    y=['Credits', 'Debits'],
+                    title="Collections by Phase",
+                    barmode='group'
                 )
-                fig_trans.update_layout(
+                fig_phase.update_layout(
                     plot_bgcolor='rgba(0,0,0,0)',
                     paper_bgcolor='rgba(0,0,0,0)',
                     font_color='#ffffff'
                 )
-                st.plotly_chart(fig_trans, use_container_width=True)
+                st.plotly_chart(fig_phase, use_container_width=True)
 
             with col2:
-                daily_collection = st.session_state.collection_df[
+                # Format phase summary for display
+                display_summary = phase_summary_df.copy()
+                for col in ['Credits', 'Debits', 'Net', 'Last Balance']:
+                    display_summary[col] = display_summary[col].apply(format_currency)
+                st.dataframe(display_summary, use_container_width=True)
+
+            # Payment mode analysis
+            st.markdown("### Payment Mode Analysis")
+            
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                payment_summary = st.session_state.collection_df[
                     st.session_state.collection_df['Dr/Cr'] == 'C'
+                ].groupby('Payment Mode')['Amount'].agg(['sum', 'count']).reset_index()
+                
+                payment_summary.columns = ['Mode', 'Amount', 'Count']
+                
+                fig_payment = px.pie(
+                    payment_summary,
+                    values='Amount',
+                    names='Mode',
+                    title="Collection by Payment Mode"
+                )
+                fig_payment.update_layout(
+                    plot_bgcolor='rgba(0,0,0,0)',
+                    paper_bgcolor='rgba(0,0,0,0)',
+                    font_color='#ffffff'
+                )
+                st.plotly_chart(fig_payment, use_container_width=True)
+            
+            with col2:
+                # Format payment summary
+                display_payment = payment_summary.copy()
+                display_payment['Amount'] = display_payment['Amount'].apply(format_currency)
+                display_payment['Percentage'] = (
+                    payment_summary['Amount'] / payment_summary['Amount'].sum() * 100
+                ).apply(lambda x: f"{x:.1f}%")
+                st.dataframe(display_payment, use_container_width=True)
+
+            # Monthly collection trend
+            st.markdown("### Collection Trends")
+            
+            monthly_collection = st.session_state.collection_df[
+                st.session_state.collection_df['Dr/Cr'] == 'C'
+            ].groupby(pd.Grouper(key='Value Date', freq='M'))['Amount'].sum().reset_index()
+            
+            fig_monthly = px.line(
+                monthly_collection,
+                x='Value Date',
+                y='Amount',
+                title="Monthly Collection Trend"
+            )
+            fig_monthly.update_layout(
+                plot_bgcolor='rgba(0,0,0,0)',
+                paper_bgcolor='rgba(0,0,0,0)',
+                font_color='#ffffff'
+            )
+            st.plotly_chart(fig_monthly, use_container_width=True)
+
+        with tab2:
+            st.markdown("### Collection Analysis")
+            
+            # Filters
+            col1, col2, col3 = st.columns(3)
+            
+            with col1:
+                selected_phase = st.selectbox(
+                    "Select Phase",
+                    ["All Phases"] + list(st.session_state.phase_sections.keys())
+                )
+            
+            with col2:
+                date_range = st.date_input(
+                    "Select Date Range",
+                    value=(
+                        st.session_state.collection_df['Value Date'].min(),
+                        st.session_state.collection_df['Value Date'].max()
+                    )
+                )
+            
+            with col3:
+                payment_modes = st.multiselect(
+                    "Payment Modes",
+                    options=st.session_state.collection_df['Payment Mode'].unique(),
+                    default=st.session_state.collection_df['Payment Mode'].unique()
+                )
+
+            # Filter collection data
+            filtered_collection = st.session_state.collection_df.copy()
+            
+            if selected_phase != "All Phases":
+                phase_indices = st.session_state.phase_sections[selected_phase]
+                filtered_collection = filtered_collection.iloc[
+                    phase_indices['start']:phase_indices['end']
+                ]
+            
+            filtered_collection = filtered_collection[
+                (filtered_collection['Value Date'].dt.date >= date_range[0]) &
+                (filtered_collection['Value Date'].dt.date <= date_range[1]) &
+                (filtered_collection['Payment Mode'].isin(payment_modes))
+            ]
+
+            # Show filtered transactions
+            st.markdown("### Transaction Details")
+            
+            # Column selection
+            default_columns = ['Txn Date', 'Value Date', 'Description', 'Dr/Cr', 
+                             'Amount', 'Payment Mode', 'Unit', 'Running Balance']
+            
+            selected_columns = st.multiselect(
+                "Select columns to display",
+                options=filtered_collection.columns,
+                default=default_columns
+            )
+
+            # Format and display filtered data
+            display_collection = filtered_collection[selected_columns].copy()
+            if 'Amount' in selected_columns:
+                display_collection['Amount'] = display_collection['Amount'].apply(format_currency)
+            if 'Running Balance' in selected_columns:
+                display_collection['Running Balance'] = display_collection['Running Balance'].apply(format_currency)
+            
+            st.dataframe(
+                display_collection.sort_values('Txn Date', ascending=False),
+                use_container_width=True
+            )
+
+            # Collection summary
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                # Daily collection trend
+                daily_collection = filtered_collection[
+                    filtered_collection['Dr/Cr'] == 'C'
                 ].groupby('Value Date')['Amount'].sum().reset_index()
                 
                 fig_daily = px.line(
@@ -343,98 +493,28 @@ def main():
                     font_color='#ffffff'
                 )
                 st.plotly_chart(fig_daily, use_container_width=True)
-
-        with tab2:
-            st.markdown("### Collection Analysis")
-            
-            # Filters
-            col1, col2, col3 = st.columns(3)
-            
-            with col1:
-                selected_phase = st.selectbox(
-                    "Select Phase",
-                    ["All Phases"] + list(st.session_state.collection_df['Phase'].unique())
-                )
             
             with col2:
-                date_range = st.date_input(
-                    "Select Date Range",
-                    value=(
-                        st.session_state.collection_df['Value Date'].min(),
-                        st.session_state.collection_df['Value Date'].max()
-                    )
+                # Running balance trend
+                fig_balance = px.line(
+                    filtered_collection,
+                    x='Value Date',
+                    y='Running Balance',
+                    title="Running Balance Trend"
                 )
-            
-            with col3:
-                transaction_types = st.multiselect(
-                    "Transaction Types",
-                    options=st.session_state.collection_df['Transaction Type'].unique(),
-                    default=st.session_state.collection_df['Transaction Type'].unique()
+                fig_balance.update_layout(
+                    plot_bgcolor='rgba(0,0,0,0)',
+                    paper_bgcolor='rgba(0,0,0,0)',
+                    font_color='#ffffff'
                 )
-
-            # Filter data
-            filtered_collection = st.session_state.collection_df.copy()
-            if selected_phase != "All Phases":
-                filtered_collection = filtered_collection[
-                    filtered_collection['Phase'] == selected_phase
-                ]
-            
-            filtered_collection = filtered_collection[
-                (filtered_collection['Value Date'].dt.date >= date_range[0]) &
-                (filtered_collection['Value Date'].dt.date <= date_range[1]) &
-                (filtered_collection['Transaction Type'].isin(transaction_types))
-            ]
-
-            # Show filtered transactions
-            st.markdown("### Transaction Details")
-            
-            # Column selection
-            default_columns = ['Txn Date', 'Value Date', 'Description', 'Dr/Cr', 
-                             'Amount', 'Transaction Type', 'Sales Tag', 'Phase']
-            
-            selected_columns = st.multiselect(
-                "Select columns to display",
-                options=filtered_collection.columns,
-                default=default_columns
-            )
-
-            # Display filtered data
-            st.dataframe(
-                filtered_collection[selected_columns].sort_values('Txn Date', ascending=False),
-                use_container_width=True
-            )
-
-            # Export option
-            col1, col2 = st.columns(2)
-            with col1:
-                csv = filtered_collection[selected_columns].to_csv(index=False , encoding='utf-8')
-                st.download_button(
-                    label="Download Filtered Transactions",
-                    data=csv,
-                    file_name=f"collection_data_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
-                    mime="text/csv"
-                )
-            
-            with col2:
-                # Summary statistics
-                summary_stats = pd.DataFrame({
-                    'Metric': ['Total Transactions', 'Total Amount', 'Average Amount', 
-                             'Credit Transactions', 'Debit Transactions'],
-                    'Value': [
-                        len(filtered_collection),
-                        f"₹{filtered_collection['Amount'].sum():,.2f}",
-                        f"₹{filtered_collection['Amount'].mean():,.2f}",
-                        len(filtered_collection[filtered_collection['Dr/Cr'] == 'C']),
-                        len(filtered_collection[filtered_collection['Dr/Cr'] == 'D'])
-                    ]
-                })
-                st.write(summary_stats)
+                st.plotly_chart(fig_balance, use_container_width=True)
 
         with tab3:
             st.markdown("### Sales Status")
 
             # Filters
-            col1, col2 = st.columns(2)
+            col1, col2, col3 = st.columns(3)
+            
             with col1:
                 tower_filter = st.multiselect(
                     "Select Towers",
@@ -448,11 +528,22 @@ def main():
                     options=list(st.session_state.sales_master_df['Type of Unit \n(2BHK, 3BHK etc.)'].unique()),
                     default=list(st.session_state.sales_master_df['Type of Unit \n(2BHK, 3BHK etc.)'].unique())
                 )
+            
+            with col3:
+                collection_range = st.slider(
+                    "Collection Percentage Range",
+                    min_value=0,
+                    max_value=100,
+                    value=(0, 100),
+                    step=5
+                )
 
             # Filter sales data
             filtered_sales = st.session_state.sales_master_df[
                 (st.session_state.sales_master_df['Tower'].isin(tower_filter)) &
-                (st.session_state.sales_master_df['Type of Unit \n(2BHK, 3BHK etc.)'].isin(unit_type_filter))
+                (st.session_state.sales_master_df['Type of Unit \n(2BHK, 3BHK etc.)'].isin(unit_type_filter)) &
+                (st.session_state.sales_master_df['Collection Percentage'] >= collection_range[0]) &
+                (st.session_state.sales_master_df['Collection Percentage'] <= collection_range[1])
             ]
 
             # Sales Analysis visualizations
@@ -478,6 +569,26 @@ def main():
                 st.plotly_chart(fig_tower, use_container_width=True)
             
             with col2:
+                unit_type_dist = filtered_sales['Type of Unit \n(2BHK, 3BHK etc.)'].value_counts()
+                
+                fig_unit_type = px.pie(
+                    values=unit_type_dist.values,
+                    names=unit_type_dist.index,
+                    title="Unit Type Distribution"
+                )
+                fig_unit_type.update_layout(
+                    plot_bgcolor='rgba(0,0,0,0)',
+                    paper_bgcolor='rgba(0,0,0,0)',
+                    font_color='#ffffff'
+                )
+                st.plotly_chart(fig_unit_type, use_container_width=True)
+
+            # Collection percentage distribution
+            st.markdown("### Collection Analysis")
+            
+            col1, col2 = st.columns(2)
+            
+            with col1:
                 collection_dist = pd.cut(
                     filtered_sales['Collection Percentage'],
                     bins=[0, 25, 50, 75, 90, 100],
@@ -495,76 +606,102 @@ def main():
                     font_color='#ffffff'
                 )
                 st.plotly_chart(fig_collection, use_container_width=True)
+            
+            with col2:
+                # BSP Analysis
+                fig_bsp = px.box(
+                    filtered_sales,
+                    x='Tower',
+                    y='BSP/SqFt',
+                    color='Type of Unit \n(2BHK, 3BHK etc.)',
+                    title="BSP Distribution by Tower and Unit Type"
+                )
+                fig_bsp.update_layout(
+                    plot_bgcolor='rgba(0,0,0,0)',
+                    paper_bgcolor='rgba(0,0,0,0)',
+                    font_color='#ffffff'
+                )
+                st.plotly_chart(fig_bsp, use_container_width=True)
 
-            # Detailed unit information
+        with tab4:
             st.markdown("### Unit Details")
             
-            # Column selection for unit details
-            default_unit_columns = ['Apartment No', 'Tower', 'Type of Unit \n(2BHK, 3BHK etc.)', 
-                                  'Area(sqft) (A)', 'Total Consideration (F = C+D+E)', 
-                                  'Amount received as on 31.01.2025', 'Collection Percentage']
+            # Column selection
+            all_columns = st.session_state.sales_master_df.columns.tolist()
+            default_columns = [
+                'Apartment No', 'Tower', 'Type of Unit \n(2BHK, 3BHK etc.)',
+                'Area(sqft) (A)', 'BSP/SqFt', 'Total Consideration (F = C+D+E)',
+                'Amount received as on 31.01.2025', 'Collection Percentage',
+                'Balance receivables (on total sales)'
+            ]
             
-            selected_unit_columns = st.multiselect(
+            selected_columns = st.multiselect(
                 "Select columns to display",
-                options=filtered_sales.columns,
-                default=default_unit_columns
+                options=all_columns,
+                default=[col for col in default_columns if col in all_columns]
             )
 
-            # Display filtered unit data
-            formatted_sales = filtered_sales[selected_unit_columns].copy()
+            # Format and display data
+            display_sales = filtered_sales[selected_columns].copy()
             
             # Format numeric columns
-            numeric_cols = ['Area(sqft) (A)', 'Total Consideration (F = C+D+E)', 
-                          'Amount received as on 31.01.2025']
-            for col in numeric_cols:
-                if col in selected_unit_columns:
-                    formatted_sales[col] = formatted_sales[col].apply(lambda x: f"₹{x:,.2f}" if 'Consideration' in col or 'Amount' in col else f"{x:,.0f}")
+            numeric_formats = {
+                'Area(sqft) (A)': lambda x: f"{x:,.0f}",
+                'BSP/SqFt': lambda x: f"₹{x:,.2f}",
+                'Total Consideration (F = C+D+E)': lambda x: f"₹{x:,.2f}",
+                'Amount received as on 31.01.2025': lambda x: f"₹{x:,.2f}",
+                'Collection Percentage': lambda x: f"{x:.1f}%",
+                'Balance receivables (on total sales)': lambda x: f"₹{x:,.2f}"
+            }
             
-            if 'Collection Percentage' in selected_unit_columns:
-                formatted_sales['Collection Percentage'] = formatted_sales['Collection Percentage'].apply(lambda x: f"{x:.1f}%")
+            for col in selected_columns:
+                if col in numeric_formats:
+                    display_sales[col] = display_sales[col].apply(numeric_formats[col])
 
             st.dataframe(
-                formatted_sales.sort_values('Apartment No'),
+                display_sales.sort_values('Apartment No'),
                 use_container_width=True
             )
 
-            # Export unit details
+            # Export options
             col1, col2 = st.columns(2)
+            
             with col1:
-                csv_units = filtered_sales[selected_unit_columns].to_csv(index=False, encoding='utf-8')
+                csv = filtered_sales[selected_columns].to_csv(index=False).encode('utf-8')
                 st.download_button(
-                    label="Download Unit Details",
-                    data=csv_units,
+                    label="Download Filtered Data as CSV",
+                    data=csv,
                     file_name=f"unit_details_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
                     mime="text/csv"
                 )
-
+            
             with col2:
-                # Unit summary statistics
-                unit_summary = pd.DataFrame({
-                    'Metric': ['Total Units', 'Total Area', 'Total Value', 
-                             'Total Collection', 'Average Collection %'],
+                # Summary statistics
+                summary_stats = pd.DataFrame({
+                    'Metric': ['Total Units', 'Total Area', 'Total Consideration', 
+                             'Total Collection', 'Average BSP', 'Average Collection %'],
                     'Value': [
                         len(filtered_sales),
                         f"{filtered_sales['Area(sqft) (A)'].sum():,.0f} sq.ft",
                         f"₹{filtered_sales['Total Consideration (F = C+D+E)'].sum():,.2f}",
                         f"₹{filtered_sales['Amount received as on 31.01.2025'].sum():,.2f}",
+                        f"₹{filtered_sales['BSP/SqFt'].mean():,.2f}",
                         f"{filtered_sales['Collection Percentage'].mean():.1f}%"
                     ]
                 })
-                st.write(unit_summary)
-
-            # Show unsold inventory
-            st.markdown("### Unsold Inventory")
-            st.dataframe(
-                st.session_state.unsold_df,
-                use_container_width=True
-            )
+                
+                csv_summary = summary_stats.to_csv(index=False).encode('utf-8')
+                st.download_button(
+                    label="Download Summary Statistics",
+                    data=csv_summary,
+                    file_name=f"summary_stats_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
+                    mime="text/csv"
+                )
 
     else:
         st.markdown("""
             <div style="text-align: center; padding: 2rem;">
-                <h2>Welcome to the Real Estate Project Management Dashboard</h2>
+                <h2>Welcome to the Real Estate Analytics Dashboard</h2>
                 <p>Please upload an Excel file to begin analysis.</p>
                 <p>The file should contain the following sheets:</p>
                 <ul style="list-style-type: none;">
