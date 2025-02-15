@@ -1,3 +1,6 @@
+Sure, I've made the changes you requested. Here's the updated complete code:
+
+```python
 import streamlit as st
 import pandas as pd
 import plotly.express as px
@@ -146,37 +149,59 @@ def categorize_transaction(description):
         return 'Transfer'
     return 'Other'
 
+def find_matching_columns(df, target_columns):
+    """Find matching columns from target list in dataframe"""
+    matches = {}
+    for col in df.columns:
+        # Split column name and remove date/special chars for matching
+        col_parts = re.sub(r'\d+.*\d+', '', col).strip()
+        col_parts = re.sub(r'\([^)]*\)', '', col_parts).strip()
+        
+        # Find best match from target columns
+        for target in target_columns:
+            target_clean = re.sub(r'\d+.*\d+', '', target).strip()
+            target_clean = re.sub(r'\([^)]*\)', '', target_clean).strip()
+            
+            if target_clean in col_parts:
+                matches[target] = col
+                break
+    return matches
+
 def process_sales_master(df):
     """Process sales master data"""
     df = df.copy()
     
-    # Convert dates
-    date_columns = ['Booking date', 'Agreement date']
-    for col in date_columns:
-        df[col] = pd.to_datetime(df[col], errors='coerce')
-    
-    # Clean numeric columns - shorter column names
-    numeric_columns = [
-        'Area(sqft)', 'Basic Price', 'BSP/SqFt', 
-        'Total Consideration', 'Amount Demanded',
-        'Amount received', 'Balance receivables'
+    # Get matching columns
+    target_columns = [
+        'Total Consideration',
+        'Amount Demanded',
+        'Amount received',
+        'Area(sqft)',
+        'BSP/SqFt',
+        'Balance receivables'
     ]
     
+    column_matches = find_matching_columns(df, target_columns)
+    
+    # Convert dates
+    date_columns = ['Booking date', 'Agreement date']
     for col in df.columns:
-        for num_col in numeric_columns:
-            if num_col in col:  # Match partial names
-                df[col] = pd.to_numeric(df[col], errors='coerce')
+        if any(date_text in col.lower() for date_text in ['date', 'booking']):
+            df[col] = pd.to_datetime(df[col], errors='coerce')
     
-    # Calculate collection percentage
-    collection_col = [col for col in df.columns if 'Amount received' in col][0]
-    demanded_col = [col for col in df.columns if 'Amount Demanded' in col][0]
+    # Process numeric columns using matched columns
+    for target, actual_col in column_matches.items():
+        df[actual_col] = pd.to_numeric(df[actual_col], errors='coerce')
     
-    if collection_col and demanded_col:
+    # Calculate collection percentage using matched columns
+    received_col = column_matches.get('Amount received')
+    demanded_col = column_matches.get('Amount Demanded')
+    if received_col and demanded_col:
         df['Collection Percentage'] = (
-            df[collection_col] / df[demanded_col] * 100
+            df[received_col] / df[demanded_col] * 100
         ).clip(0, 100)
     
-    return df
+    return df, column_matches
 
 def process_unsold_inventory(df):
     """Process unsold inventory data"""
@@ -233,7 +258,8 @@ def main():
                     'Annex - Sales Master',
                     skiprows=3
                 )
-                sales_master_df = process_sales_master(sales_master_df)
+                sales_master_df, column_matches = process_sales_master(sales_master_df)
+                st.session_state.column_matches = column_matches
 
                 # Process Unsold Inventory
                 unsold_df = pd.read_excel(
@@ -282,30 +308,35 @@ def main():
                 )
 
             with col2:
-                consideration_col = [col for col in st.session_state.sales_master_df.columns if 'Total Consideration' in col][0]
-                total_consideration = st.session_state.sales_master_df[consideration_col].sum()
-                st.metric(
-                    "Total Consideration",
-                    format_currency(total_consideration),
-                    delta="View Details"
-                )
+                consideration_col = st.session_state.column_matches.get('Total Consideration')
+                if consideration_col:
+                    total_consideration = st.session_state.sales_master_df[consideration_col].sum()
+                    st.metric(
+                        "Total Consideration",
+                        format_currency(total_consideration),
+                        delta="View Details"
+                    )
 
             with col3:
-                total_collection = st.session_state.sales_master_df['Amount received as on 31.01.2025'].sum()
-                collection_percentage = (total_collection / total_consideration * 100)
-                st.metric(
-                    "Collection Achievement",
-                    f"{collection_percentage:.1f}%",
-                    delta=format_currency(total_consideration - total_collection)
-                )
+                received_col = st.session_state.column_matches.get('Amount received')
+                if received_col and consideration_col:
+                    total_collection = st.session_state.sales_master_df[received_col].sum()
+                    collection_percentage = (total_collection / total_consideration * 100)
+                    st.metric(
+                        "Collection Achievement",
+                        f"{collection_percentage:.1f}%",
+                        delta=format_currency(total_consideration - total_collection)
+                    )
 
             with col4:
-                total_area = st.session_state.sales_master_df['Area(sqft) (A)'].sum()
-                st.metric(
-                    "Total Area",
-                    f"{total_area:,.0f} sq.ft",
-                    delta=f"{unsold_units/total_units*100:.1f}% unsold"
-                )
+                area_col = st.session_state.column_matches.get('Area(sqft)')
+                if area_col:
+                    total_area = st.session_state.sales_master_df[area_col].sum()
+                    st.metric(
+                        "Total Area",
+                        f"{total_area:,.0f} sq.ft",
+                        delta=f"{unsold_units/total_units*100:.1f}% unsold"
+                    )
 
             # Phase-wise collection summary
             st.markdown("### Phase-wise Collection Summary")
@@ -347,7 +378,6 @@ def main():
                     font_color='#ffffff'
                 )
                 st.plotly_chart(fig_phase, use_container_width=True)
-
             with col2:
                 # Format phase summary for display
                 display_summary = phase_summary_df.copy()
