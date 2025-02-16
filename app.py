@@ -353,26 +353,54 @@ def format_percentage(value: float) -> str:
         return "0.0%"
 
 def create_collection_summary(df: pd.DataFrame, phase_sections: Dict) -> pd.DataFrame:
-    """Create summary of collections by phase"""
+    """Create summary of collections by phase with error handling"""
     summaries = []
     
-    for phase, indices in phase_sections.items():
-        phase_data = df.iloc[indices['start']:indices['end']]
+    try:
+        for phase, indices in phase_sections.items():
+            try:
+                phase_data = df.iloc[indices['start']:indices['end']]
+                
+                credits = phase_data[
+                    phase_data['Dr/Cr'].str.strip().str.upper() == 'C'
+                ]['Amount'].sum()
+                
+                debits = phase_data[
+                    phase_data['Dr/Cr'].str.strip().str.upper() == 'D'
+                ]['Amount'].sum()
+                
+                last_balance = phase_data['Running Balance'].iloc[-1] if len(phase_data) > 0 else 0
+                
+                summaries.append({
+                    'Phase': phase,
+                    'Credits': float(credits),  # Ensure numeric type
+                    'Debits': float(debits),    # Ensure numeric type
+                    'Net': float(credits - debits),
+                    'Last_Balance': float(last_balance),
+                    'Account': phase_sections[phase].get('account', 'N/A')
+                })
+            except Exception as e:
+                print(f"Error processing phase {phase}: {str(e)}")
+                continue
         
-        credits = phase_data[phase_data['Dr/Cr'] == 'C']['Amount'].sum()
-        debits = phase_data[phase_data['Dr/Cr'] == 'D']['Amount'].sum()
-        last_balance = phase_data['Running Balance'].iloc[-1] if len(phase_data) > 0 else 0
+        # Create DataFrame
+        summary_df = pd.DataFrame(summaries)
         
-        summaries.append({
-            'Phase': phase,
-            'Credits': credits,
-            'Debits': debits,
-            'Net': credits - debits,
-            'Last Balance': last_balance,
-            'Account': phase_sections[phase].get('account', 'N/A')
-        })
-    
-    return pd.DataFrame(summaries)
+        # Melt the DataFrame for plotting
+        plot_df = pd.melt(
+            summary_df,
+            id_vars=['Phase'],
+            value_vars=['Credits', 'Debits'],
+            var_name='Type',
+            value_name='Amount'
+        )
+        
+        return plot_df
+    except Exception as e:
+        print(f"Error creating summary: {str(e)}")
+        # Return empty DataFrame with required columns
+        return pd.DataFrame(columns=['Phase', 'Type', 'Amount'])
+        
 
 def main():
     """Main application function"""
@@ -516,38 +544,58 @@ def main():
 
             # Phase-wise collection summary
             st.markdown("### Phase-wise Collection Summary")
-            
-            # Create phase summary using the summary function
+
+            # Create phase summary
             phase_summary_df = create_collection_summary(
                 st.session_state.collection_df,
                 st.session_state.phase_sections
             )
-            
+
             # Show phase summary
             col1, col2 = st.columns(2)
-            
+
             with col1:
-                fig_phase = px.bar(
-                    phase_summary_df,
-                    x='Phase',
-                    y=['Credits', 'Debits'],
-                    title="Collections by Phase",
-                    barmode='group',
-                    color_discrete_sequence=COLORS['primary']
-                )
-                fig_phase.update_layout(
-                    plot_bgcolor=COLORS['background'],
-                    paper_bgcolor=COLORS['background'],
-                    font_color=COLORS['text']
-                )
-                st.plotly_chart(fig_phase, use_container_width=True)
-            
+                if not phase_summary_df.empty:
+                    fig_phase = px.bar(
+                        phase_summary_df,
+                        x='Phase',
+                        y='Amount',
+                        color='Type',
+                        title="Collections by Phase",
+                        barmode='group',
+                        color_discrete_sequence=COLORS['primary']
+                    )
+                    fig_phase.update_layout(
+                        plot_bgcolor=COLORS['background'],
+                        paper_bgcolor=COLORS['background'],
+                        font_color=COLORS['text']
+                    )
+                    st.plotly_chart(fig_phase, use_container_width=True)
+                else:
+                    st.warning("No phase data available for visualization")
+
             with col2:
-                # Format phase summary for display
-                display_summary = phase_summary_df.copy()
-                for col in ['Credits', 'Debits', 'Net', 'Last Balance']:
-                    display_summary[col] = display_summary[col].apply(format_currency)
-                st.dataframe(display_summary, use_container_width=True)
+                # Display summary table
+                if not phase_summary_df.empty:
+                    # Pivot the data back for display
+                    display_summary = phase_summary_df.pivot(
+                        index='Phase',
+                        columns='Type',
+                        values='Amount'
+                    ).reset_index()
+
+                    # Add Net and Last Balance columns if needed
+                    if 'Credits' in display_summary and 'Debits' in display_summary:
+                        display_summary['Net'] = display_summary['Credits'] - display_summary['Debits']
+
+                    # Format currency values
+                    for col in ['Credits', 'Debits', 'Net']:
+                        if col in display_summary:
+                            display_summary[col] = display_summary[col].apply(format_currency)
+
+                    st.dataframe(display_summary, use_container_width=True)
+                else:
+                    st.warning("No summary data available")
 
             # Payment mode analysis
             st.markdown("### Payment Mode Analysis")
