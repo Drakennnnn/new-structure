@@ -7,7 +7,9 @@ import numpy as np
 import re
 import logging
 import warnings
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple, Any
+from dataclasses import dataclass
+import json
 
 # Configure logging and suppress warnings
 logging.getLogger("streamlit_health_check").setLevel(logging.ERROR)
@@ -21,70 +23,105 @@ COLORS = {
     'text': '#ffffff'
 }
 
+@dataclass
+class PhaseInfo:
+    """Store phase information"""
+    phase_number: int
+    account_number: str
+    start_row: int
+    end_row: Optional[int] = None
+    total_credits: float = 0.0
+    total_debits: float = 0.0
+    running_balance: float = 0.0
+
 class PhaseProcessor:
-    """Handle phase-wise data processing"""
+    """Enhanced phase-wise data processing"""
     
     def __init__(self):
-        self.phase_pattern = r'Main Collection Escrow A/c Phase-\d+'
+        self.phase_pattern = r'Main Collection Escrow A/c Phase-(\d+)'
         self.account_pattern = r'\d{14}'
-        self.default_columns = ['Description', 'Dr/Cr', 'Amount', 'Value Date', 'Sales Tag']
 
-    def find_phase_markers(self, df: pd.DataFrame) -> Dict:
-        """Find phase boundaries and account numbers"""
+    def extract_phase_info(self, row: pd.Series) -> Optional[Tuple[int, str]]:
+        """Extract phase number and account number from row"""
+        for val in row.values:
+            val_str = str(val)
+            phase_match = re.search(self.phase_pattern, val_str)
+            if phase_match:
+                phase_num = int(phase_match.group(1))
+                # Find account number in this row
+                account_num = None
+                for cell in row.values:
+                    account_match = re.search(self.account_pattern, str(cell))
+                    if account_match:
+                        account_num = account_match.group(0)
+                        break
+                return phase_num, account_num
+        return None
+
+    def find_phase_sections(self, df: pd.DataFrame) -> Dict[str, PhaseInfo]:
+        """Find phase sections with improved detection"""
         phases = {}
         current_phase = None
         
+        # Check first row for Phase-1
+        first_info = self.extract_phase_info(df.iloc[0])
+        if first_info:
+            phase_num, account_num = first_info
+            current_phase = f"Phase-{phase_num}"
+            phases[current_phase] = PhaseInfo(
+                phase_number=phase_num,
+                account_number=account_num,
+                start_row=1  # Skip header row
+            )
+        
+        # Find other phases
         for idx, row in df.iterrows():
-            # Check for phase header in entire row
-            for col in df.columns:
-                cell_value = str(row[col])
-                phase_match = re.search(r'Phase-(\d+)', cell_value)
+            phase_info = self.extract_phase_info(row)
+            if phase_info:
+                phase_num, account_num = phase_info
                 
-                if phase_match and 'Main Collection Escrow A/c' in cell_value:
-                    # Found a phase marker
-                    if current_phase:
-                        phases[current_phase]['end'] = idx - 1
-                    
-                    phase_num = phase_match.group(1)
-                    current_phase = f"Phase-{phase_num}"
-                    
-                    # Look for account number in this row
-                    account_no = None
-                    for col2 in df.columns:
-                        val = str(row[col2])
-                        if re.match(r'^\d{14}$', val.strip()):
-                            account_no = val.strip()
-                            break
-                    
-                    phases[current_phase] = {
-                        'start': idx + 1,
-                        'account': account_no,
-                        'phase_num': int(phase_num)
-                    }
-                    break
+                # Set end for previous phase
+                if current_phase:
+                    phases[current_phase].end_row = idx - 1
+                
+                current_phase = f"Phase-{phase_num}"
+                phases[current_phase] = PhaseInfo(
+                    phase_number=phase_num,
+                    account_number=account_num,
+                    start_row=idx + 1
+                )
         
         # Set end for last phase
         if current_phase:
-            phases[current_phase]['end'] = len(df)
+            phases[current_phase].end_row = len(df)
         
         return phases
 
-    def process_phase_data(self, df: pd.DataFrame, phase_info: Dict) -> pd.DataFrame:
+    def process_phase_data(self, df: pd.DataFrame, phase_info: PhaseInfo) -> pd.DataFrame:
         """Process data for a specific phase"""
-        phase_data = df.iloc[phase_info['start']:phase_info['end']].copy()
+        if phase_info.end_row is None:
+            phase_info.end_row = len(df)
+            
+        phase_data = df.iloc[phase_info.start_row:phase_info.end_row].copy()
         
-        # Calculate running balance within phase
+        # Clean amount data
         phase_data['Amount'] = pd.to_numeric(
-            phase_data['Amount'].astype(str).str.replace(',', ''), 
+            phase_data['Amount'].astype(str).str.replace(',', ''),
             errors='coerce'
         ).fillna(0)
         
+        # Calculate running balance
         phase_data['Running Balance'] = phase_data.apply(
             lambda x: x['Amount'] if x['Dr/Cr'] == 'C' else -x['Amount'],
             axis=1
         ).cumsum()
         
-        # Add transaction flags
+        # Update phase totals
+        phase_info.total_credits = phase_data[phase_data['Dr/Cr'] == 'C']['Amount'].sum()
+        phase_info.total_debits = phase_data[phase_data['Dr/Cr'] == 'D']['Amount'].sum()
+        phase_info.running_balance = phase_data['Running Balance'].iloc[-1] if not phase_data.empty else 0
+        
+        # Add flags
         phase_data['Is_Bounce'] = phase_data.apply(
             lambda x: 'Bounce' in str(x.get('Sales Tag', '')) or 
                      'RET-' in str(x.get('Description', '')),
@@ -98,7 +135,7 @@ class PhaseProcessor:
         return phase_data
 
 class TransactionProcessor:
-    """Handle transaction processing and categorization"""
+    """Enhanced transaction processing and categorization"""
     
     def __init__(self):
         self.transaction_patterns = {
@@ -133,8 +170,8 @@ class TransactionProcessor:
             return unit_match.group(0)
         return None
 
-    def process_transaction(self, row: pd.Series) -> Dict:
-        """Process a single transaction row"""
+    def process_transaction(self, row: pd.Series) -> Dict[str, Any]:
+        """Process a single transaction with enhanced details"""
         return {
             'date': pd.to_datetime(row['Value Date'], errors='coerce'),
             'amount': pd.to_numeric(
@@ -148,18 +185,29 @@ class TransactionProcessor:
             ),
             'receipt_status': row.get('Receipt_Status', 'Generated'),
             'transaction_mode': self.categorize_transaction(row['Description']),
-            'unit_no': self.extract_unit_info(row.get('Sales Tag', ''))
+            'unit_no': self.extract_unit_info(row.get('Sales Tag', '')),
+            'phase': row.get('Phase', 'Unknown'),
+            'account': row.get('Account', 'Unknown')
         }
 
+@dataclass
+class ProcessedFile:
+    """Store processed data from a single file"""
+    filename: str
+    collection_df: pd.DataFrame
+    sales_master_df: pd.DataFrame
+    unsold_df: pd.DataFrame
+    phases: Dict[str, PhaseInfo]
+    date: datetime
+
 class DataProcessor:
-    """Main data processing class"""
-    
+    """Enhanced data processing with multiple file support"""
     def __init__(self):
         self.phase_processor = PhaseProcessor()
         self.transaction_processor = TransactionProcessor()
         
     def process_dates(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Process date columns with multiple format handling"""
+        """Process date columns with enhanced format handling"""
         date_formats = [
             '%d/%m/%Y %H:%M:%S',
             '%d/%m/%Y',
@@ -176,34 +224,44 @@ class DataProcessor:
                 for fmt in date_formats:
                     try:
                         df[col] = pd.to_datetime(df[col], format=fmt, errors='coerce')
-                        break
+                        if not df[col].isna().all():
+                            break
                     except:
                         continue
+                        
+                # If all formats failed, try a final generic parse
+                if df[col].isna().all():
+                    df[col] = pd.to_datetime(df[col], errors='coerce')
         
         return df
 
     def process_amounts(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Process amount columns"""
-        amount_columns = [
-            'Amount', 'Running Balance', 'Total Consideration',
-            'Amount Demanded', 'Amount received', 'Balance receivables'
+        """Process amount columns with enhanced validation"""
+        amount_patterns = [
+            'amount', 'balance', 'consideration', 'demanded', 
+            'received', 'receivables', 'total', 'bsp'
         ]
         
         for col in df.columns:
-            if any(amount_text in col for amount_text in amount_columns):
-                df[col] = pd.to_numeric(
-                    df[col].astype(str).str.replace(',', ''),
-                    errors='coerce'
-                ).fillna(0)
+            if any(pattern in col.lower() for pattern in amount_patterns):
+                df[col] = (
+                    df[col]
+                    .astype(str)
+                    .str.replace('₹', '')
+                    .str.replace(',', '')
+                    .str.replace(' ', '')
+                    .str.strip()
+                )
+                df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
         
         return df
 
-    def process_collection_account(self, df: pd.DataFrame) -> Tuple[pd.DataFrame, Dict]:
-        """Process collection account data"""
+    def process_collection_account(self, df: pd.DataFrame) -> Tuple[pd.DataFrame, Dict[str, PhaseInfo]]:
+        """Process collection account data with enhanced phase handling"""
         df = df.copy()
         
-        # Find phase information
-        phases = self.phase_processor.find_phase_markers(df)
+        # Find phase sections
+        phases = self.phase_processor.find_phase_sections(df)
         
         # Process dates and amounts
         df = self.process_dates(df)
@@ -216,16 +274,19 @@ class DataProcessor:
         
         # Process each phase
         processed_phases = {}
-        for phase, info in phases.items():
-            processed_phases[phase] = self.phase_processor.process_phase_data(df, info)
+        for phase_name, phase_info in phases.items():
+            processed_df = self.phase_processor.process_phase_data(df, phase_info)
+            processed_df['Phase'] = phase_name
+            processed_df['Account'] = phase_info.account_number
+            processed_phases[phase_name] = processed_df
         
         # Combine processed data
-        processed_df = pd.concat(processed_phases.values())
+        processed_df = pd.concat(processed_phases.values(), ignore_index=True)
         
         return processed_df, phases
 
     def process_sales_master(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Process sales master data"""
+        """Process sales master data with enhanced column detection"""
         df = df.copy()
         
         # Skip summary rows
@@ -260,16 +321,17 @@ class DataProcessor:
         return df
 
     def process_unsold_inventory(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Process unsold inventory data"""
+        """Process unsold inventory with enhanced validation"""
         df = df.copy()
         
         # Clean area column
         area_cols = [col for col in df.columns if 'area' in col.lower()]
         if area_cols:
-            df[area_cols[0]] = pd.to_numeric(
-                df[area_cols[0]].astype(str).str.replace(',', ''),
-                errors='coerce'
-            ).fillna(0)
+            for col in area_cols:
+                df[col] = pd.to_numeric(
+                    df[col].astype(str).str.replace(',', ''),
+                    errors='coerce'
+                ).fillna(0)
         
         # Add status if missing
         if 'Status' not in df.columns:
@@ -277,28 +339,81 @@ class DataProcessor:
         
         return df
 
+    def process_file(self, file) -> ProcessedFile:
+        """Process a single Excel file with enhanced error handling"""
+        try:
+            excel_file = pd.ExcelFile(file)
+            filename = getattr(file, 'name', 'Unknown')
+            
+            # Process Collection Account
+            collection_df = pd.read_excel(
+                excel_file, 
+                'Main Collection AC P1_P2_P3',
+                skiprows=1
+            )
+            collection_df, phases = self.process_collection_account(collection_df)
+            
+            # Process Sales Master
+            sales_master_df = pd.read_excel(
+                excel_file,
+                'Annex - Sales Master',
+                skiprows=3
+            )
+            sales_master_df = self.process_sales_master(sales_master_df)
+            
+            # Process Unsold Inventory
+            unsold_df = pd.read_excel(
+                excel_file,
+                'Un Sold Inventory'
+            )
+            unsold_df = self.process_unsold_inventory(unsold_df)
+            
+            # Extract date from filename or use current date
+            try:
+                date_str = re.search(r'\d{8}', filename)
+                if date_str:
+                    file_date = datetime.strptime(date_str.group(0), '%Y%m%d')
+                else:
+                    file_date = datetime.now()
+            except:
+                file_date = datetime.now()
+            
+            return ProcessedFile(
+                filename=filename,
+                collection_df=collection_df,
+                sales_master_df=sales_master_df,
+                unsold_df=unsold_df,
+                phases=phases,
+                date=file_date
+            )
+        except Exception as e:
+            raise Exception(f"Error processing file {getattr(file, 'name', 'Unknown')}: {str(e)}")
+
 def format_currency(value: float) -> str:
-    """Format currency values"""
+    """Format currency values with enhanced validation"""
     try:
         return f"₹{float(value):,.2f}"
     except:
         return "₹0.00"
 
 def format_percentage(value: float) -> str:
-    """Format percentage values"""
+    """Format percentage values with enhanced validation"""
     try:
         return f"{float(value):.1f}%"
     except:
         return "0.0%"
 
-def create_phase_summary(df: pd.DataFrame, phases: Dict) -> Tuple[pd.DataFrame, pd.DataFrame]:
-    """Create phase-wise summary with proper error handling"""
+def create_phase_summary(collection_df: pd.DataFrame, 
+                        phases: Dict[str, PhaseInfo]) -> Tuple[pd.DataFrame, pd.DataFrame]:
+    """Create phase-wise summary with enhanced aggregation"""
     summaries = []
     
     try:
-        for phase, info in phases.items():
+        for phase_name, phase_info in phases.items():
             try:
-                phase_data = df.iloc[info['start']:info['end']]
+                phase_data = collection_df[
+                    collection_df['Phase'] == phase_name
+                ]
                 
                 credits = phase_data[
                     phase_data['Dr/Cr'].str.strip().str.upper() == 'C'
@@ -311,21 +426,21 @@ def create_phase_summary(df: pd.DataFrame, phases: Dict) -> Tuple[pd.DataFrame, 
                 last_balance = phase_data['Running Balance'].iloc[-1] if len(phase_data) > 0 else 0
                 
                 summaries.append({
-                    'Phase': phase,
+                    'Phase': phase_name,
                     'Credits': float(credits),
                     'Debits': float(debits),
                     'Net': float(credits - debits),
                     'Last_Balance': float(last_balance),
-                    'Account': info.get('account', 'N/A')
+                    'Account': phase_info.account_number
                 })
             except Exception as e:
-                st.error(f"Error processing phase {phase}: {str(e)}")
+                st.error(f"Error processing phase {phase_name}: {str(e)}")
                 continue
         
-        # Create DataFrame for plotting
+        # Create summary DataFrame
         summary_df = pd.DataFrame(summaries)
         
-        # Melt for visualization
+        # Create plot DataFrame
         plot_df = pd.melt(
             summary_df,
             id_vars=['Phase'],
@@ -340,22 +455,135 @@ def create_phase_summary(df: pd.DataFrame, phases: Dict) -> Tuple[pd.DataFrame, 
         return pd.DataFrame(columns=['Phase', 'Type', 'Amount']), pd.DataFrame()
 
 def create_payment_summary(df: pd.DataFrame) -> pd.DataFrame:
-    """Create payment mode summary"""
+    """Create payment mode summary with enhanced aggregation"""
     if df.empty:
         return pd.DataFrame(columns=['Mode', 'Amount', 'Count', 'Percentage'])
+    
+    try:    
+        payment_summary = df[
+            df['Dr/Cr'] == 'C'
+        ].groupby('Payment Mode').agg({
+            'Amount': ['sum', 'count']
+        }).reset_index()
         
-    payment_summary = df[
-        df['Dr/Cr'] == 'C'
-    ].groupby('Payment Mode').agg({
-        'Amount': ['sum', 'count']
-    }).reset_index()
-    
-    payment_summary.columns = ['Mode', 'Amount', 'Count']
-    payment_summary['Percentage'] = (
-        payment_summary['Amount'] / payment_summary['Amount'].sum() * 100
-    )
-    
-    return payment_summary
+        payment_summary.columns = ['Mode', 'Amount', 'Count']
+        total_amount = payment_summary['Amount'].sum()
+        
+        if total_amount > 0:
+            payment_summary['Percentage'] = (
+                payment_summary['Amount'] / total_amount * 100
+            )
+        else:
+            payment_summary['Percentage'] = 0
+        
+        return payment_summary
+    except Exception as e:
+        st.error(f"Error creating payment summary: {str(e)}")
+        return pd.DataFrame(columns=['Mode', 'Amount', 'Count', 'Percentage'])
+
+def compare_periods(df1: ProcessedFile, df2: ProcessedFile) -> Dict[str, pd.DataFrame]:
+    """Compare data between two periods"""
+    try:
+        comparisons = {}
+        
+        # Collection comparison
+        collection_comparison = pd.DataFrame({
+            'Metric': ['Total Collections', 'Total Units', 'Collection Percentage'],
+            df1.filename: [
+                df1.collection_df[df1.collection_df['Dr/Cr'] == 'C']['Amount'].sum(),
+                len(df1.sales_master_df),
+                df1.sales_master_df['Collection Percentage'].mean() if 'Collection Percentage' in df1.sales_master_df else 0
+            ],
+            df2.filename: [
+                df2.collection_df[df2.collection_df['Dr/Cr'] == 'C']['Amount'].sum(),
+                len(df2.sales_master_df),
+                df2.sales_master_df['Collection Percentage'].mean() if 'Collection Percentage' in df2.sales_master_df else 0
+            ]
+        })
+        
+        collection_comparison['Change'] = (
+            collection_comparison[df2.filename] - 
+            collection_comparison[df1.filename]
+        )
+        
+        comparisons['collection'] = collection_comparison
+        
+        # Payment mode comparison
+        payment_summary1 = create_payment_summary(df1.collection_df)
+        payment_summary2 = create_payment_summary(df2.collection_df)
+        
+        payment_comparison = pd.merge(
+            payment_summary1, 
+            payment_summary2,
+            on='Mode',
+            suffixes=('_1', '_2'),
+            how='outer'
+        ).fillna(0)
+        
+        comparisons['payment_modes'] = payment_comparison
+        
+        return comparisons
+    except Exception as e:
+        st.error(f"Error comparing periods: {str(e)}")
+        return {}
+
+def process_collection_trends(df: pd.DataFrame, 
+                            start_date: Optional[datetime] = None,
+                            end_date: Optional[datetime] = None) -> pd.DataFrame:
+    """Process collection trends with enhanced date handling"""
+    try:
+        # Ensure Value Date is datetime
+        df['Value Date'] = pd.to_datetime(df['Value Date'], errors='coerce')
+        df = df[df['Value Date'].notna()]
+        
+        if start_date and end_date:
+            df = df[
+                (df['Value Date'].dt.date >= start_date) &
+                (df['Value Date'].dt.date <= end_date)
+            ]
+        
+        # Calculate monthly trends
+        monthly = df[df['Dr/Cr'] == 'C'].copy()
+        monthly['Month'] = monthly['Value Date'].dt.to_period('M')
+        monthly_summary = monthly.groupby('Month')['Amount'].sum().reset_index()
+        monthly_summary['Month'] = monthly_summary['Month'].dt.to_timestamp()
+        
+        return monthly_summary
+    except Exception as e:
+        st.error(f"Error processing collection trends: {str(e)}")
+        return pd.DataFrame(columns=['Month', 'Amount'])
+
+def filter_collection_data(df: pd.DataFrame, 
+                         phase_name: Optional[str] = None,
+                         start_date: Optional[datetime] = None,
+                         end_date: Optional[datetime] = None,
+                         payment_modes: Optional[List[str]] = None) -> pd.DataFrame:
+    """Filter collection data with enhanced validation"""
+    try:
+        filtered_df = df.copy()
+        
+        if phase_name and phase_name != "All Phases":
+            filtered_df = filtered_df[filtered_df['Phase'] == phase_name]
+        
+        if start_date and end_date:
+            filtered_df['Value Date'] = pd.to_datetime(
+                filtered_df['Value Date'], 
+                errors='coerce'
+            )
+            filtered_df = filtered_df[
+                (filtered_df['Value Date'].dt.date >= start_date) &
+                (filtered_df['Value Date'].dt.date <= end_date)
+            ]
+        
+        if payment_modes:
+            filtered_df = filtered_df[
+                filtered_df['Payment Mode'].isin(payment_modes)
+            ]
+        
+        return filtered_df
+    except Exception as e:
+        st.error(f"Error filtering data: {str(e)}")
+        return df
 
 # Set page configuration
 st.set_page_config(
@@ -422,27 +650,6 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-def filter_collection_data(df: pd.DataFrame, phase_info: Optional[Dict] = None,
-                         start_date: Optional[datetime] = None,
-                         end_date: Optional[datetime] = None,
-                         payment_modes: Optional[List] = None) -> pd.DataFrame:
-    """Filter collection data based on criteria"""
-    filtered_df = df.copy()
-    
-    if phase_info:
-        filtered_df = filtered_df.iloc[phase_info['start']:phase_info['end']]
-    
-    if start_date and end_date:
-        filtered_df = filtered_df[
-            (filtered_df['Value Date'].dt.date >= start_date) &
-            (filtered_df['Value Date'].dt.date <= end_date)
-        ]
-    
-    if payment_modes:
-        filtered_df = filtered_df[filtered_df['Payment Mode'].isin(payment_modes)]
-    
-    return filtered_df
-
 def main():
     st.title("Real Estate Analytics Dashboard")
     st.markdown("---")
@@ -451,81 +658,54 @@ def main():
     processor = DataProcessor()
 
     # Initialize session state
-    if 'data_loaded' not in st.session_state:
-        st.session_state.data_loaded = False
-        st.session_state.collection_df = None
-        st.session_state.sales_master_df = None
-        st.session_state.unsold_df = None
-        st.session_state.phases = None
+    if 'processed_files' not in st.session_state:
+        st.session_state.processed_files = {}
 
     # File upload
-    uploaded_file = st.file_uploader("Upload MIS Excel File", type=['xlsx', 'xls'])
+    uploaded_files = st.file_uploader(
+        "Upload MIS Excel File(s)",
+        type=['xlsx', 'xls'],
+        accept_multiple_files=True
+    )
 
-    if uploaded_file is not None:
-        try:
-            with st.spinner('Processing data...'):
-                # Read Excel file
-                excel_file = pd.ExcelFile(uploaded_file)
-                
-                # Verify required sheets
-                required_sheets = [
-                    'Main Collection AC P1_P2_P3',
-                    'Annex - Sales Master',
-                    'Un Sold Inventory'
-                ]
-                missing_sheets = [
-                    sheet for sheet in required_sheets 
-                    if sheet not in excel_file.sheet_names
-                ]
-                if missing_sheets:
-                    st.error(f"Missing required sheets: {', '.join(missing_sheets)}")
-                    st.stop()
+    if uploaded_files:
+        for file in uploaded_files:
+            try:
+                if file.name not in st.session_state.processed_files:
+                    with st.spinner(f'Processing {file.name}...'):
+                        processed_file = processor.process_file(file)
+                        st.session_state.processed_files[file.name] = processed_file
+                        st.success(f"Processed {file.name} successfully!")
+            except Exception as e:
+                st.error(f"Error processing {file.name}: {str(e)}")
 
-                # Process Collection Account
-                collection_df = pd.read_excel(
-                    excel_file, 
-                    'Main Collection AC P1_P2_P3',
-                    skiprows=1
+    if st.session_state.processed_files:
+        # File selection
+        selected_file = st.selectbox(
+            "Select File to Analyze",
+            options=list(st.session_state.processed_files.keys()),
+            key="file_selector"
+        )
+        
+        current_file = st.session_state.processed_files[selected_file]
+
+        # Compare with another file
+        if len(st.session_state.processed_files) > 1:
+            comparison_file = st.selectbox(
+                "Compare with",
+                options=[f for f in st.session_state.processed_files.keys() if f != selected_file],
+                key="comparison_selector"
+            )
+            
+            if comparison_file:
+                comparisons = compare_periods(
+                    current_file,
+                    st.session_state.processed_files[comparison_file]
                 )
-                collection_df, phases = processor.process_collection_account(collection_df)
+                
+                st.markdown("### Period Comparison")
+                st.dataframe(comparisons['collection'])
 
-                # Process Sales Master
-                try:
-                    sales_master_df = pd.read_excel(
-                        excel_file,
-                        'Annex - Sales Master',
-                        skiprows=3
-                    )
-                    sales_master_df = processor.process_sales_master(sales_master_df)
-                except Exception as e:
-                    st.error(f"Error processing Sales Master sheet: {str(e)}")
-                    sales_master_df = pd.DataFrame()
-
-                # Process Unsold Inventory
-                try:
-                    unsold_df = pd.read_excel(
-                        excel_file,
-                        'Un Sold Inventory'
-                    )
-                    unsold_df = processor.process_unsold_inventory(unsold_df)
-                except Exception as e:
-                    st.error(f"Error processing Unsold Inventory sheet: {str(e)}")
-                    unsold_df = pd.DataFrame()
-
-                # Store in session state
-                st.session_state.data_loaded = True
-                st.session_state.collection_df = collection_df
-                st.session_state.sales_master_df = sales_master_df
-                st.session_state.unsold_df = unsold_df
-                st.session_state.phases = phases
-
-                st.success("Data loaded successfully!")
-
-        except Exception as e:
-            st.error(f"Error processing file: {str(e)}")
-            st.stop()
-
-    if st.session_state.data_loaded:
         # Main tabs
         tab1, tab2, tab3, tab4 = st.tabs([
             "Project Overview",
@@ -537,29 +717,27 @@ def main():
         with tab1:
             st.markdown("### Project Overview")
             
-            # Phase selection for filtering
+            # Phase selection
             selected_phase = st.selectbox(
                 "Select Phase",
-                ["All Phases"] + list(st.session_state.phases.keys())
+                ["All Phases"] + list(current_file.phases.keys())
             )
             
-            # Filter data based on phase
             if selected_phase != "All Phases":
-                phase_info = st.session_state.phases[selected_phase]
-                filtered_df = st.session_state.collection_df.iloc[
-                    phase_info['start']:phase_info['end']
+                phase_info = current_file.phases[selected_phase]
+                filtered_df = current_file.collection_df[
+                    current_file.collection_df['Phase'] == selected_phase
                 ]
-                st.info(f"Showing data for {selected_phase} (Account: {phase_info['account']})")
+                st.info(f"Showing data for {selected_phase} (Account: {phase_info.account_number})")
             else:
-                filtered_df = st.session_state.collection_df
-                phase_info = None
+                filtered_df = current_file.collection_df
 
             # Summary metrics
             col1, col2, col3, col4 = st.columns(4)
             
             with col1:
-                total_units = len(st.session_state.sales_master_df)
-                unsold_units = len(st.session_state.unsold_df)
+                total_units = len(current_file.sales_master_df)
+                unsold_units = len(current_file.unsold_df)
                 st.metric(
                     "Total Units",
                     f"{total_units}",
@@ -568,10 +746,15 @@ def main():
                 )
 
             with col2:
-                consideration_cols = [col for col in st.session_state.sales_master_df.columns 
-                                   if 'consideration' in col.lower()]
+                # Find consideration column
+                consideration_cols = [
+                    col for col in current_file.sales_master_df.columns 
+                    if 'consideration' in col.lower()
+                ]
                 if consideration_cols:
-                    total_consideration = st.session_state.sales_master_df[consideration_cols[0]].sum()
+                    total_consideration = current_file.sales_master_df[
+                        consideration_cols[0]
+                    ].sum()
                     st.metric(
                         "Total Consideration",
                         format_currency(total_consideration),
@@ -579,30 +762,43 @@ def main():
                     )
 
             with col3:
-                if not st.session_state.sales_master_df.empty:
-                    received_cols = [col for col in st.session_state.sales_master_df.columns 
-                                   if 'received' in col.lower()]
-                    demanded_cols = [col for col in st.session_state.sales_master_df.columns 
-                                   if 'demanded' in col.lower()]
+                # Find collection columns
+                collection_cols = {
+                    'received': next((col for col in current_file.sales_master_df.columns 
+                                    if 'received' in col.lower()), None),
+                    'demanded': next((col for col in current_file.sales_master_df.columns 
+                                    if 'demanded' in col.lower()), None)
+                }
+                
+                if all(collection_cols.values()):
+                    total_collection = current_file.sales_master_df[
+                        collection_cols['received']
+                    ].sum()
+                    total_demand = current_file.sales_master_df[
+                        collection_cols['demanded']
+                    ].sum()
                     
-                    if received_cols and demanded_cols:
-                        total_collection = st.session_state.sales_master_df[received_cols[0]].sum()
-                        total_demand = st.session_state.sales_master_df[demanded_cols[0]].sum()
-                        collection_percentage = (total_collection / total_demand * 100)
-                        st.metric(
-                            "Collection Achievement",
-                            format_percentage(collection_percentage),
-                            delta=format_currency(total_demand - total_collection),
-                            delta_color="inverse"
-                        )
+                    collection_percentage = (total_collection / total_demand * 100)
+                    pending_collection = total_demand - total_collection
+                    
+                    st.metric(
+                        "Collection Achievement",
+                        format_percentage(collection_percentage),
+                        delta=format_currency(pending_collection),
+                        delta_color="inverse"
+                    )
 
             with col4:
-                area_cols = [col for col in st.session_state.sales_master_df.columns 
-                           if 'area' in col.lower()]
+                # Find area column
+                area_cols = [
+                    col for col in current_file.sales_master_df.columns 
+                    if 'area' in col.lower()
+                ]
                 if area_cols:
                     area_col = area_cols[0]
-                    total_area = st.session_state.sales_master_df[area_col].sum()
-                    unsold_area = st.session_state.unsold_df[area_col].sum() if area_col in st.session_state.unsold_df else 0
+                    total_area = current_file.sales_master_df[area_col].sum()
+                    unsold_area = current_file.unsold_df[area_col].sum() if area_col in current_file.unsold_df else 0
+                    
                     st.metric(
                         "Total Area",
                         f"{total_area:,.0f} sq.ft",
@@ -614,8 +810,8 @@ def main():
             st.markdown("### Phase-wise Collection Summary")
             
             plot_df, summary_df = create_phase_summary(
-                st.session_state.collection_df,
-                st.session_state.phases
+                current_file.collection_df,
+                current_file.phases
             )
             
             if not plot_df.empty:
@@ -639,7 +835,6 @@ def main():
                     st.plotly_chart(fig_phase, use_container_width=True)
                 
                 with col2:
-                    # Display summary table
                     display_summary = summary_df.copy()
                     for col in ['Credits', 'Debits', 'Net', 'Last_Balance']:
                         if col in display_summary.columns:
@@ -651,16 +846,13 @@ def main():
             # Payment mode analysis
             st.markdown("### Payment Mode Analysis")
             
-            # Add payment mode filter
             payment_modes = st.multiselect(
                 "Select Payment Modes",
                 options=filtered_df['Payment Mode'].unique(),
                 default=filtered_df['Payment Mode'].unique()
             )
             
-            # Filter by payment modes
             filtered_df = filtered_df[filtered_df['Payment Mode'].isin(payment_modes)]
-            
             payment_summary = create_payment_summary(filtered_df)
             
             col1, col2 = st.columns(2)
@@ -707,30 +899,27 @@ def main():
                         value=filtered_df['Value Date'].max()
                     )
                 
-                # Filter by date range
                 filtered_df = filter_collection_data(
                     filtered_df,
-                    phase_info=phase_info if selected_phase != "All Phases" else None,
+                    phase_name=selected_phase if selected_phase != "All Phases" else None,
                     start_date=start_date,
                     end_date=end_date,
                     payment_modes=payment_modes
                 )
                 
                 if not filtered_df.empty:
-                    # Monthly trend
-                    monthly_collection = filtered_df[
-                        filtered_df['Dr/Cr'] == 'C'
-                    ].groupby(
-                        filtered_df['Value Date'].dt.to_period('M')
-                    )['Amount'].sum().reset_index()
-                    
-                    monthly_collection['Value Date'] = monthly_collection['Value Date'].dt.to_timestamp()
+                    monthly_collection = process_collection_trends(
+                        filtered_df,
+                        start_date,
+                        end_date
+                    )
                     
                     fig_monthly = px.line(
                         monthly_collection,
-                        x='Value Date',
+                        x='Month',
                         y='Amount',
-                        title="Monthly Collection Trend"
+                        title="Monthly Collection Trend",
+                        markers=True
                     )
                     fig_monthly.update_layout(
                         plot_bgcolor=COLORS['background'],
@@ -754,7 +943,6 @@ def main():
                         default=[col for col in default_columns if col in filtered_df.columns]
                     )
                     
-                    # Format display data
                     display_df = filtered_df[display_columns].copy()
                     if 'Amount' in display_columns:
                         display_df['Amount'] = display_df['Amount'].apply(format_currency)
@@ -774,22 +962,21 @@ def main():
         with tab2:
             st.markdown("### Collection Analysis")
             
-            # Phase filter
+            # Phase filter for collection analysis
             selected_phase = st.selectbox(
                 "Select Phase",
-                ["All Phases"] + list(st.session_state.phases.keys()),
+                ["All Phases"] + list(current_file.phases.keys()),
                 key="collection_phase"
             )
             
-            # Filter data
             if selected_phase != "All Phases":
-                phase_info = st.session_state.phases[selected_phase]
-                collection_data = st.session_state.collection_df.iloc[
-                    phase_info['start']:phase_info['end']
+                collection_data = current_file.collection_df[
+                    current_file.collection_df['Phase'] == selected_phase
                 ]
-                st.info(f"Analyzing {selected_phase} (Account: {phase_info['account']})")
+                phase_info = current_file.phases[selected_phase]
+                st.info(f"Analyzing {selected_phase} (Account: {phase_info.account_number})")
             else:
-                collection_data = st.session_state.collection_df.copy()
+                collection_data = current_file.collection_df.copy()
             
             # Collection status
             st.markdown("### Collection Status")
@@ -829,23 +1016,18 @@ def main():
                     use_container_width=True
                 )
 
-            # Collection trends
+            # Collection trends for selected phase
             st.markdown("### Collection Trends")
             
             try:
-                monthly_trend = collection_data[
-                    collection_data['Dr/Cr'] == 'C'
-                ].groupby(
-                    collection_data['Value Date'].dt.to_period('M')
-                )['Amount'].sum().reset_index()
-                
-                monthly_trend['Value Date'] = monthly_trend['Value Date'].dt.to_timestamp()
+                monthly_collection = process_collection_trends(collection_data)
                 
                 fig_trend = px.line(
-                    monthly_trend,
-                    x='Value Date',
+                    monthly_collection,
+                    x='Month',
                     y='Amount',
-                    title="Monthly Collection Trend"
+                    title="Monthly Collection Trend",
+                    markers=True
                 )
                 fig_trend.update_layout(
                     plot_bgcolor=COLORS['background'],
@@ -865,19 +1047,19 @@ def main():
             with col1:
                 tower_filter = st.multiselect(
                     "Select Towers",
-                    options=list(st.session_state.sales_master_df['Tower'].unique()),
-                    default=list(st.session_state.sales_master_df['Tower'].unique())
+                    options=list(current_file.sales_master_df['Tower'].unique()),
+                    default=list(current_file.sales_master_df['Tower'].unique())
                 )
             
             with col2:
-                unit_type_cols = [col for col in st.session_state.sales_master_df.columns 
+                unit_type_cols = [col for col in current_file.sales_master_df.columns 
                                 if 'type' in col.lower() and 'unit' in col.lower()]
                 if unit_type_cols:
                     unit_type_col = unit_type_cols[0]
                     unit_type_filter = st.multiselect(
                         "Select Unit Types",
-                        options=list(st.session_state.sales_master_df[unit_type_col].unique()),
-                        default=list(st.session_state.sales_master_df[unit_type_col].unique())
+                        options=list(current_file.sales_master_df[unit_type_col].unique()),
+                        default=list(current_file.sales_master_df[unit_type_col].unique())
                     )
                 else:
                     unit_type_filter = []
@@ -892,8 +1074,8 @@ def main():
                 )
 
             # Filter sales data
-            filtered_sales = st.session_state.sales_master_df[
-                (st.session_state.sales_master_df['Tower'].isin(tower_filter))
+            filtered_sales = current_file.sales_master_df[
+                current_file.sales_master_df['Tower'].isin(tower_filter)
             ]
             
             if unit_type_cols and unit_type_filter:
@@ -994,45 +1176,37 @@ def main():
             st.markdown("### Unit Details")
             
             # Column selection
-            all_columns = st.session_state.sales_master_df.columns.tolist()
-            default_columns = [
-                'Apartment No', 'Tower', unit_type_col if unit_type_cols else None,
-                area_cols[0] if area_cols else None,
-                bsp_cols[0] if bsp_cols else None,
-                consideration_cols[0] if consideration_cols else None,
-                received_cols[0] if received_cols else None,
-                'Collection Percentage',
-                demanded_cols[0] if demanded_cols else None
-            ]
-            
-            default_columns = [col for col in default_columns if col is not None]
+            all_columns = current_file.sales_master_df.columns.tolist()
+            unit_cols = [col for col in all_columns if any(text in col.lower() 
+                        for text in ['apartment', 'unit', 'tower', 'type', 'area', 'bsp', 
+                                   'consideration', 'received', 'collection'])]
             
             selected_columns = st.multiselect(
                 "Select columns to display",
                 options=all_columns,
-                default=[col for col in default_columns if col in all_columns]
+                default=unit_cols
             )
 
             # Format and display data
             display_sales = filtered_sales[selected_columns].copy()
             
-            # Format numeric columns
+            # Format numeric columns based on patterns
             numeric_formats = {
-                'Area': lambda x: f"{x:,.0f}",
-                'BSP': lambda x: f"₹{x:,.2f}",
-                'Consideration': lambda x: f"₹{x:,.2f}",
-                'Amount': lambda x: f"₹{x:,.2f}",
-                'Collection': lambda x: f"{x:.1f}%",
-                'Balance': lambda x: f"₹{x:,.2f}"
+                'area': lambda x: f"{x:,.0f}",
+                'bsp': lambda x: f"₹{x:,.2f}",
+                'consideration': lambda x: f"₹{x:,.2f}",
+                'amount': lambda x: f"₹{x:,.2f}",
+                'collection': lambda x: f"{x:.1f}%",
+                'balance': lambda x: f"₹{x:,.2f}"
             }
             
             for col in selected_columns:
                 for key, formatter in numeric_formats.items():
-                    if key.lower() in col.lower():
+                    if key in col.lower():
                         display_sales[col] = display_sales[col].apply(formatter)
 
             st.dataframe(
-                display_sales.sort_values('Apartment No'),
+                display_sales.sort_values('Apartment No' if 'Apartment No' in selected_columns else selected_columns[0]),
                 use_container_width=True
             )
 
@@ -1050,16 +1224,24 @@ def main():
             
             with col2:
                 # Summary statistics
+                summary_cols = {
+                    'area': next((col for col in selected_columns if 'area' in col.lower()), None),
+                    'consideration': next((col for col in selected_columns if 'consideration' in col.lower()), None),
+                    'received': next((col for col in selected_columns if 'received' in col.lower()), None),
+                    'bsp': next((col for col in selected_columns if 'bsp' in col.lower()), None),
+                    'collection': 'Collection Percentage' if 'Collection Percentage' in selected_columns else None
+                }
+                
                 summary_stats = pd.DataFrame({
                     'Metric': ['Total Units', 'Total Area', 'Total Consideration', 
                              'Total Collection', 'Average BSP', 'Average Collection %'],
                     'Value': [
                         len(filtered_sales),
-                        f"{filtered_sales[area_cols[0]].sum():,.0f} sq.ft" if area_cols else "N/A",
-                        format_currency(filtered_sales[consideration_cols[0]].sum()) if consideration_cols else "N/A",
-                        format_currency(filtered_sales[received_cols[0]].sum()) if received_cols else "N/A",
-                        format_currency(filtered_sales[bsp_cols[0]].mean()) if bsp_cols else "N/A",
-                        format_percentage(filtered_sales['Collection Percentage'].mean()) if 'Collection Percentage' in filtered_sales else "N/A"
+                        f"{filtered_sales[summary_cols['area']].sum():,.0f} sq.ft" if summary_cols['area'] else "N/A",
+                        format_currency(filtered_sales[summary_cols['consideration']].sum()) if summary_cols['consideration'] else "N/A",
+                        format_currency(filtered_sales[summary_cols['received']].sum()) if summary_cols['received'] else "N/A",
+                        format_currency(filtered_sales[summary_cols['bsp']].mean()) if summary_cols['bsp'] else "N/A",
+                        format_percentage(filtered_sales[summary_cols['collection']].mean()) if summary_cols['collection'] else "N/A"
                     ]
                 })
                 
@@ -1075,8 +1257,8 @@ def main():
         st.markdown("""
             <div style="text-align: center; padding: 2rem;">
                 <h2>Welcome to the Real Estate Analytics Dashboard</h2>
-                <p>Please upload an Excel file to begin analysis.</p>
-                <p>The file should contain the following sheets:</p>
+                <p>Please upload Excel file(s) to begin analysis.</p>
+                <p>The file(s) should contain the following sheets:</p>
                 <ul style="list-style-type: none;">
                     <li>Main Collection AC P1_P2_P3</li>
                     <li>Annex - Sales Master</li>
