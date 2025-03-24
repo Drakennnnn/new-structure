@@ -269,67 +269,90 @@ def identify_account_sections(sheet):
     accounts = []
     current_account = None
     
-    for r_idx, row in enumerate(sheet.iter_rows(min_row=1, max_row=sheet.max_row, max_col=10, values_only=True)):
-        row_text = ' '.join([str(cell) for cell in row if cell is not None])
+    # Get sheet dimensions
+    range_ref = sheet['!ref']
+    if not range_ref:
+        return accounts
+    
+    range_data = XLSX.utils.decode_range(range_ref)
+    max_row = range_data.e.r
+    
+    # First, find the header row in the first section
+    header_row = -1
+    header_indices = {}
+    
+    # Look for the header row with Txn Date, Description, etc.
+    for r in range(min(10, max_row)):
+        row_data = []
+        for c in range(15):  # Check the first 15 columns
+            cell = sheet[XLSX.utils.encode_cell({r: r, c: c})]
+            if cell:
+                row_data.append(cell.v)
+            else:
+                row_data.append(None)
         
-        # Look for account headers (Main Collection Escrow A/c Phase-X patterns)
-        if ('Main Collection' in row_text or 'Collection Account' in row_text) and \
-           ('Escrow' in row_text or 'A/c' in row_text):
+        # Convert to string for easier checking
+        row_text = ' '.join([str(val) for val in row_data if val is not None])
+        
+        # Check if this looks like the header row
+        if 'Txn Date' in row_text and 'Dr/Cr' in row_text and 'Amount' in row_text:
+            header_row = r
             
-            # Extract account name and number
-            account_name = None
-            account_number = None
+            # Map headers to column indices
+            for c, val in enumerate(row_data):
+                if val:
+                    val_str = str(val).lower()
+                    if 'txn date' in val_str:
+                        header_indices['date'] = c
+                    elif 'description' in val_str:
+                        header_indices['description'] = c
+                    elif 'amount' in val_str and not 'running' in val_str:
+                        header_indices['amount'] = c
+                    elif ('dr' in val_str and 'cr' in val_str) or val_str == 'dr/cr':
+                        header_indices['type'] = c
+                    elif 'sales' in val_str and 'tag' in val_str:
+                        header_indices['sales_tag'] = c
+                    elif 'running' in val_str and 'total' in val_str:
+                        header_indices['running_total'] = c
             
-            for cell in row:
-                if cell and 'Collection' in str(cell):
-                    account_name = str(cell)
-                elif cell and isinstance(cell, (int, float)) and len(str(int(cell))) > 8:
-                    # Likely an account number (long number)
-                    account_number = str(int(cell))
+            break
+    
+    # Now find all phase transitions
+    for r in range(max_row + 1):
+        # Look for rows with "Main Collection Escrow A/c Phase-X"
+        phase_name = None
+        account_number = None
+        
+        for c in range(5):  # Check first 5 columns
+            cell = sheet[XLSX.utils.encode_cell({r: r, c: c})]
+            if cell and cell.v:
+                # Check for phase name
+                if isinstance(cell.v, str) and "Main Collection Escrow A/c Phase-" in cell.v:
+                    phase_name = cell.v
+                # Check for account number (long numeric value)
+                elif (isinstance(cell.v, (int, float)) and 
+                      len(str(int(cell.v))) > 10):
+                    account_number = str(int(cell.v))
+        
+        if phase_name and account_number:
+            # Close previous account if any
+            if current_account:
+                current_account['end_row'] = r - 1
+                accounts.append(current_account)
             
-            if account_name:
-                # Close previous account if any
-                if current_account:
-                    current_account['end_row'] = r_idx - 1
-                    accounts.append(current_account)
-                
-                # Start new account
-                current_account = {
-                    'name': account_name,
-                    'number': account_number,
-                    'start_row': r_idx + 1,
-                    'end_row': None
-                }
-                
-                # Look for header row which should be right after account header
-                header_row = r_idx + 1
-                headers = list(sheet.iter_rows(min_row=header_row, max_row=header_row, values_only=True))[0]
-
-                # Store header indices
-                header_indices = {}
-                for idx, header in enumerate(headers):
-                    if header:
-                        header_str = str(header).lower()
-                        
-                        if 'date' in header_str:
-                            header_indices['date'] = idx
-                        elif 'description' in header_str or 'narration' in header_str:
-                            header_indices['description'] = idx
-                        elif 'amount' in header_str:
-                            header_indices['amount'] = idx
-                        elif ('dr' in header_str and 'cr' in header_str) or header_str == 'dr/cr':
-                            header_indices['type'] = idx
-                        elif 'sales' in header_str and 'tag' in header_str:
-                            header_indices['sales_tag'] = idx
-                        elif 'running' in header_str and 'total' in header_str:
-                            header_indices['running_total'] = idx
-                
-                current_account['header_indices'] = header_indices
-                current_account['header_row'] = header_row
+            # Start new account section
+            current_account = {
+                'name': phase_name,
+                'number': account_number,
+                'start_row': r + 1,  # Start after the header row
+                'end_row': None,
+                'header_indices': header_indices,
+                'header_row': header_row
+            }
     
     # Add the last account
     if current_account:
-        current_account['end_row'] = sheet.max_row
+        current_account['end_row'] = max_row
         accounts.append(current_account)
     
     return accounts
@@ -343,11 +366,23 @@ def parse_collection_transactions(sheet, accounts_info):
         header_indices = account['header_indices']
         
         # Read transactions for this account
-        for r_idx in range(account['header_row'] + 1, account.get('end_row', sheet.max_row) + 1):
-            row = list(sheet.iter_rows(min_row=r_idx, max_row=r_idx, values_only=True))[0]
+        for r_idx in range(account['start_row'], account.get('end_row', sheet.max_row) + 1):
+            # Skip the account header or column header rows
+            if r_idx <= account['header_row']:
+                continue
+                
+            # Get row data
+            row_data = {}
+            row_has_data = False
+            
+            for c in range(20):  # Check first 20 columns
+                cell = sheet[XLSX.utils.encode_cell({r: r_idx, c: c})]
+                if cell and cell.v !== undefined:
+                    row_data[c] = cell.v
+                    row_has_data = true
             
             # Skip empty rows
-            if all(cell is None or cell == '' for cell in row):
+            if !row_has_data:
                 continue
             
             transaction = {
@@ -356,26 +391,34 @@ def parse_collection_transactions(sheet, accounts_info):
                 'row': r_idx
             }
             
-            # Extract data based on header indices
-            for field, idx in header_indices.items():
-                if idx < len(row):
-                    # Special handling for sales_tag to ensure it's treated as a string
-                    if field == 'sales_tag':
-                        if row[idx] is not None:
-                            transaction[field] = str(row[idx])
-                        else:
-                            transaction[field] = None
-                    else:
-                        transaction[field] = row[idx]
+            // Extract data based on header indices
+            for (const [field, idx] of Object.entries(header_indices)) {
+                if (row_data[idx] !== undefined) {
+                    // Special handling for sales_tag and type fields
+                    if (field === 'sales_tag') {
+                        transaction[field] = row_data[idx] !== null ? String(row_data[idx]) : null;
+                    } 
+                    else if (field === 'type') {
+                        transaction[field] = row_data[idx] !== null ? String(row_data[idx]) : null;
+                    }
+                    else {
+                        transaction[field] = row_data[idx];
+                    }
+                }
+            }
             
-            # Only include rows with amount and date (valid transactions)
-            if 'amount' in transaction and transaction['amount'] is not None and \
-               'date' in transaction and transaction['date'] is not None:
-                # Convert Excel date to Python datetime
-                transaction['date'] = extract_excel_date(transaction['date'])
-                all_transactions.append(transaction)
+            // Only include rows with amount and date (valid transactions)
+            if (transaction.amount !== undefined && transaction.amount !== null && 
+                transaction.date !== undefined && transaction.date !== null) {
+                // Convert Excel date to Python datetime
+                transaction.date = extract_excel_date(transaction.date);
+                all_transactions.push(transaction);
+            }
+        }
+    }
     
-    return pd.DataFrame(all_transactions)
+    return pd.DataFrame(all_transactions);
+}
 
 def verify_transactions(sales_master_df, collection_df):
     """Verify transactions against customer data"""
@@ -399,26 +442,43 @@ def verify_transactions(sales_master_df, collection_df):
         try:
             # Check if sales_tag column exists
             if 'sales_tag' in collection_df.columns:
-                # Handle unit number formatting for matching
+                # Normalize unit number for matching: remove spaces and dashes
                 search_unit = unit_number.replace(' ', '').replace('-', '').upper()
                 
-                # More robust filtering with error handling
-                unit_transactions = collection_df[
-                    collection_df['sales_tag'].notna() & 
-                    collection_df['sales_tag'].astype(str).str.upper().str.replace(' ', '').str.replace('-', '').str.contains(search_unit, na=False, regex=False)
+                # Try different matching patterns to handle variations
+                patterns = [
+                    search_unit,  # Exact match 
+                    f"CA{search_unit.replace('CA', '')}"  # Handle CA prefix variations
                 ]
+                
+                # Create a mask for matching any pattern
+                mask = collection_df['sales_tag'].notna()
+                for pattern in patterns:
+                    mask = mask & collection_df['sales_tag'].astype(str).str.upper().str.replace(' ', '').str.replace('-', '').str.contains(pattern, regex=False)
+                
+                unit_transactions = collection_df[mask]
+                
+                # If nothing found, try looser matching
+                if unit_transactions.empty:
+                    # Just match the numeric part (like 402 from CA 04-402)
+                    if '-' in unit_number:
+                        unit_num = unit_number.split('-')[-1]
+                        unit_transactions = collection_df[
+                            collection_df['sales_tag'].notna() &
+                            collection_df['sales_tag'].astype(str).str.contains(unit_num, regex=False)
+                        ]
             else:
                 unit_transactions = pd.DataFrame()  # Empty DataFrame if no sales_tag column
         except Exception as e:
-            print(f"Error processing sales_tag for unit {unit_number}: {str(e)}")
-            unit_transactions = pd.DataFrame()  # Fallback to empty DataFrame on error
+            print(f"Error matching transactions for unit {unit_number}: {str(e)}")
+            unit_transactions = pd.DataFrame()
         
-        # Calculate expected amount with taxes
+        # Calculate expected amounts
         expected_amount = customer.get('Amount received (Inc Taxes)', 0)
         if pd.isna(expected_amount):
             expected_amount = 0
         
-        expected_base_amount = customer.get('Amount received ( Exl Taxes)', 0)
+        expected_base_amount = customer.get('Amount received ( Exl Taxes)', 0) 
         if pd.isna(expected_base_amount):
             expected_base_amount = 0
         
@@ -428,22 +488,22 @@ def verify_transactions(sales_master_df, collection_df):
         
         # Calculate actual received from transactions
         try:
-            if 'type' in unit_transactions.columns:
+            if 'type' in unit_transactions.columns and not unit_transactions.empty:
                 credit_transactions = unit_transactions[
                     unit_transactions['type'].notna() & 
-                    unit_transactions['type'].astype(str).str.upper().str.contains('C', na=False)
+                    unit_transactions['type'].astype(str).str.upper().str.contains('C', regex=False)
                 ]
                 
                 debit_transactions = unit_transactions[
                     unit_transactions['type'].notna() & 
-                    unit_transactions['type'].astype(str).str.upper().str.contains('D', na=False)
+                    unit_transactions['type'].astype(str).str.upper().str.contains('D', regex=False)
                 ]
             else:
-                # Fallback if type column is missing - assume all are credits
+                # If no type column, assume all transactions are credits
                 credit_transactions = unit_transactions
                 debit_transactions = pd.DataFrame()
         except Exception as e:
-            print(f"Error processing transaction types: {str(e)}")
+            print(f"Error processing transaction types for unit {unit_number}: {str(e)}")
             credit_transactions = pd.DataFrame()
             debit_transactions = pd.DataFrame()
         
@@ -456,25 +516,30 @@ def verify_transactions(sales_master_df, collection_df):
         # Check for bounced transactions
         bounced_transactions = []
         for _, cr_txn in credit_transactions.iterrows():
-            cr_date = cr_txn['date']
-            cr_amount = cr_txn['amount']
-            
-            # Look for debits with same amount within 7 days (potential bounce)
-            potential_bounces = debit_transactions[
-                (debit_transactions['date'] >= cr_date) & 
-                (debit_transactions['date'] <= cr_date + pd.Timedelta(days=7)) &
-                (debit_transactions['amount'] == cr_amount)
-            ]
-            
-            if not potential_bounces.empty:
-                for _, bounce in potential_bounces.iterrows():
-                    bounced_transactions.append({
-                        'credit_date': cr_date,
-                        'credit_amount': cr_amount,
-                        'debit_date': bounce['date'],
-                        'debit_amount': bounce['amount'],
-                        'description': bounce.get('description', '')
-                    })
+            if 'date' in cr_txn and 'amount' in cr_txn:
+                cr_date = cr_txn['date']
+                cr_amount = cr_txn['amount']
+                
+                # Look for debits with same amount within 7 days (potential bounce)
+                try:
+                    if not debit_transactions.empty and 'date' in debit_transactions.columns:
+                        potential_bounces = debit_transactions[
+                            (debit_transactions['date'] >= cr_date) & 
+                            (debit_transactions['date'] <= cr_date + pd.Timedelta(days=7)) &
+                            (debit_transactions['amount'] == cr_amount)
+                        ]
+                        
+                        if not potential_bounces.empty:
+                            for _, bounce in potential_bounces.iterrows():
+                                bounced_transactions.append({
+                                    'credit_date': cr_date,
+                                    'credit_amount': cr_amount,
+                                    'debit_date': bounce.get('date'),
+                                    'debit_amount': bounce.get('amount'),
+                                    'description': bounce.get('description', '')
+                                })
+                except Exception as e:
+                    print(f"Error checking for bounced transactions: {str(e)}")
         
         # Determine verification status
         # Tolerance of 1 rupee for floating point discrepancies
@@ -524,6 +589,23 @@ def generate_cost_sheet_data(customer_info, verification_info):
     formatted_unit = f"{tower_no}-{unit_number.split('-')[-1] if '-' in unit_number else unit_number}"
     formatted_unit = formatted_unit.replace(" ", "-").upper()
     
+    # Get values with proper null/None checking
+    super_area = customer_info.get('Area(sqft)', 0)
+    if super_area is None or pd.isna(super_area):
+        super_area = 0
+        
+    carpet_area = customer_info.get('Carpet Area(sqft)', 0)
+    if carpet_area is None or pd.isna(carpet_area):
+        carpet_area = 0
+        
+    bsp_rate = customer_info.get('BSP/SqFt', 0)
+    if bsp_rate is None or pd.isna(bsp_rate):
+        bsp_rate = 0
+        
+    bsp_amount = customer_info.get('Basic Price ( Exl Taxes)', 0)
+    if bsp_amount is None or pd.isna(bsp_amount):
+        bsp_amount = 0
+    
     # Basic customer and unit info
     cost_sheet_data = {
         'unit_number': unit_number,
@@ -532,63 +614,106 @@ def generate_cost_sheet_data(customer_info, verification_info):
         'customer_name': customer_info.get('Name of Customer', ''),
         'booking_date': customer_info.get('Booking date'),
         'payment_plan': customer_info.get('Payment Plan', ''),
-        'super_area': customer_info.get('Area(sqft)', 0),
-        'carpet_area': customer_info.get('Carpet Area(sqft)', 0),
+        'super_area': super_area,
+        'carpet_area': carpet_area,
     }
     
-    # Get BSP amount and other values with defaults
-    bsp_amount = customer_info.get('Basic Price ( Exl Taxes)', 0)
-    if bsp_amount is None:
-        bsp_amount = 0
-
-    super_area = cost_sheet_data.get('super_area', 0)
-    if super_area is None:
-        super_area = 0
-
     # Cost calculations
+    ifms_rate = 25  # Standard rates based on your examples
+    ifms_amount = ifms_rate * super_area
+    amc_rate = 3
+    amc_amount = amc_rate * super_area * 12  # Annual (12 months)
+    gst_rate = 5  # 5% on BSP
+    gst_amount = 0.05 * bsp_amount
+    amc_gst_rate = 18  # 18% on AMC
+    amc_gst_amount = 0.18 * amc_amount
+    
     cost_sheet_data.update({
-        'bsp_rate': customer_info.get('BSP/SqFt', 0) or 0,
+        'bsp_rate': bsp_rate,
         'bsp_amount': bsp_amount,
-        'ifms_rate': 25,  # Standard rates based on your examples
-        'ifms_amount': 25 * super_area,
-        'amc_rate': 3,
-        'amc_amount': 3 * super_area * 12,  # Annual (12 months)
-        'gst_rate': 5,  # 5% on BSP
-        'gst_amount': 0.05 * bsp_amount,
-        'amc_gst_rate': 18,  # 18% on AMC
-        'amc_gst_amount': 0.18 * (3 * super_area * 12),
+        'ifms_rate': ifms_rate,
+        'ifms_amount': ifms_amount,
+        'amc_rate': amc_rate,
+        'amc_amount': amc_amount,
+        'gst_rate': gst_rate,
+        'gst_amount': gst_amount,
+        'amc_gst_rate': amc_gst_rate,
+        'amc_gst_amount': amc_gst_amount,
     })
     
     # Payment information
     verification = verification_info.get(unit_number, {})
+    
+    # Handle null/None values
+    expected_base_amount = verification.get('expected_base_amount', 0)
+    if expected_base_amount is None or pd.isna(expected_base_amount):
+        expected_base_amount = 0
+        
+    expected_tax_amount = verification.get('expected_tax_amount', 0) 
+    if expected_tax_amount is None or pd.isna(expected_tax_amount):
+        expected_tax_amount = 0
+        
+    expected_amount = verification.get('expected_amount', 0)
+    if expected_amount is None or pd.isna(expected_amount):
+        expected_amount = 0
+        
+    balance_receivable = customer_info.get('Balance receivables (Total Sale Consideration )', 0)
+    if balance_receivable is None or pd.isna(balance_receivable):
+        balance_receivable = 0
+    
     cost_sheet_data.update({
-        'amount_received': verification.get('expected_base_amount', 0),
-        'gst_received': verification.get('expected_tax_amount', 0),
-        'total_received': verification.get('expected_amount', 0),
-        'balance_receivable': customer_info.get('Balance receivables (Total Sale Consideration )', 0),
+        'amount_received': expected_base_amount,
+        'gst_received': expected_tax_amount,
+        'total_received': expected_amount,
+        'balance_receivable': balance_receivable,
     })
     
     # Bank transaction details
     transactions = verification.get('transactions', [])
-    cost_sheet_data['transactions'] = sorted(transactions, key=lambda x: x.get('date', pd.NaT))
+    cost_sheet_data['transactions'] = sorted(transactions, key=lambda x: x.get('date', pd.NaT) or pd.NaT)
     
-    # Calculate balance receivable
-    total_consideration = cost_sheet_data['bsp_amount'] + cost_sheet_data['ifms_amount'] + cost_sheet_data['amc_amount']
+    # Calculate total consideration and balance receivable
+    total_consideration = bsp_amount + ifms_amount + amc_amount
     cost_sheet_data['total_consideration'] = total_consideration
-    cost_sheet_data['balance_receivable'] = total_consideration - cost_sheet_data['amount_received']
+    cost_sheet_data['balance_receivable'] = total_consideration - expected_base_amount
     
     # Broker information
+    broker_name = customer_info.get('Broker Name', '')
+    if not broker_name or pd.isna(broker_name):
+        broker_name = 'DIRECT'
+        
+    broker_rate = 100  # Standard rate from examples
+    broker_amount = broker_rate * super_area
+    
     cost_sheet_data.update({
-        'broker_name': customer_info.get('Broker Name', 'DIRECT'),
-        'broker_rate': 100,  # Standard rate from examples
-        'broker_amount': 100 * cost_sheet_data['super_area'],
+        'broker_name': broker_name,
+        'broker_rate': broker_rate,
+        'broker_amount': broker_amount,
     })
     
+    # Calculate floor number from unit number
+    floor_number = "Ground"
+    try:
+        unit_num_part = formatted_unit.split('-')[-1]
+        if unit_num_part.isdigit():
+            floor = int(unit_num_part) // 100
+            floor_number = f"{floor}th" if floor != 0 else "Ground"
+    except:
+        pass
+    
     # Additional info
+    home_loan = customer_info.get('Self-funded or loan availed', '')
+    if not home_loan or pd.isna(home_loan):
+        home_loan = 'N/A'
+        
+    co_applicant = customer_info.get('CO-APPLICANT NAME', '')
+    if not co_applicant or pd.isna(co_applicant):
+        co_applicant = 'N/A'
+    
     cost_sheet_data.update({
-        'floor_number': f"{int(formatted_unit.split('-')[-1]) // 100}th",
-        'home_loan': customer_info.get('Self-funded or loan availed', 'N/A'),
-        'co_applicant': "N/A",  # Would need to add this to the sales master parsing
+        'floor_number': floor_number,
+        'home_loan': home_loan,
+        'co_applicant': co_applicant
     })
     
     return cost_sheet_data
