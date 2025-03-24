@@ -414,7 +414,7 @@ def parse_collection_transactions(sheet, accounts_info):
                 transaction.date = extract_excel_date(transaction.date);
                 all_transactions.push(transaction);
             }
-        }
+        
     }
     
     return pd.DataFrame(all_transactions);
