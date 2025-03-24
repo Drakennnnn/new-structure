@@ -536,18 +536,27 @@ def generate_cost_sheet_data(customer_info, verification_info):
         'carpet_area': customer_info.get('Carpet Area(sqft)', 0),
     }
     
+    # Get BSP amount and other values with defaults
+    bsp_amount = customer_info.get('Basic Price ( Exl Taxes)', 0)
+    if bsp_amount is None:
+        bsp_amount = 0
+
+    super_area = cost_sheet_data.get('super_area', 0)
+    if super_area is None:
+        super_area = 0
+
     # Cost calculations
     cost_sheet_data.update({
-        'bsp_rate': customer_info.get('BSP/SqFt', 0),
-        'bsp_amount': customer_info.get('Basic Price ( Exl Taxes)', 0),
+        'bsp_rate': customer_info.get('BSP/SqFt', 0) or 0,
+        'bsp_amount': bsp_amount,
         'ifms_rate': 25,  # Standard rates based on your examples
-        'ifms_amount': 25 * cost_sheet_data['super_area'],
+        'ifms_amount': 25 * super_area,
         'amc_rate': 3,
-        'amc_amount': 3 * cost_sheet_data['super_area'] * 12,  # Annual (12 months)
+        'amc_amount': 3 * super_area * 12,  # Annual (12 months)
         'gst_rate': 5,  # 5% on BSP
-        'gst_amount': 0.05 * cost_sheet_data['bsp_amount'],
+        'gst_amount': 0.05 * bsp_amount,
         'amc_gst_rate': 18,  # 18% on AMC
-        'amc_gst_amount': 0.18 * (3 * cost_sheet_data['super_area'] * 12),
+        'amc_gst_amount': 0.18 * (3 * super_area * 12),
     })
     
     # Payment information
