@@ -270,12 +270,16 @@ def identify_account_sections(sheet):
     current_account = None
     
     # Get sheet dimensions
-    range_ref = sheet['!ref']
-    if not range_ref:
+    try:
+        if '!ref' not in sheet:
+            return accounts
+            
+        range_ref = sheet['!ref']
+        range_data = XLSX.utils.decode_range(range_ref)
+        max_row = range_data.e.r
+    except Exception as e:
+        print(f"Error getting sheet dimensions: {e}")
         return accounts
-    
-    range_data = XLSX.utils.decode_range(range_ref)
-    max_row = range_data.e.r
     
     # First, find the header row in the first section
     header_row = -1
@@ -285,10 +289,13 @@ def identify_account_sections(sheet):
     for r in range(min(10, max_row)):
         row_data = []
         for c in range(15):  # Check the first 15 columns
-            cell = sheet[XLSX.utils.encode_cell({r: r, c: c})]
-            if cell:
-                row_data.append(cell.v)
-            else:
+            try:
+                cell = sheet[XLSX.utils.encode_cell({'r': r, 'c': c})]
+                if cell and hasattr(cell, 'v'):
+                    row_data.append(cell.v)
+                else:
+                    row_data.append(None)
+            except Exception:
                 row_data.append(None)
         
         # Convert to string for easier checking
@@ -306,7 +313,7 @@ def identify_account_sections(sheet):
                         header_indices['date'] = c
                     elif 'description' in val_str:
                         header_indices['description'] = c
-                    elif 'amount' in val_str and not 'running' in val_str:
+                    elif 'amount' in val_str and 'running' not in val_str:
                         header_indices['amount'] = c
                     elif ('dr' in val_str and 'cr' in val_str) or val_str == 'dr/cr':
                         header_indices['type'] = c
