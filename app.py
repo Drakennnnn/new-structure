@@ -359,7 +359,14 @@ def parse_collection_transactions(sheet, accounts_info):
             # Extract data based on header indices
             for field, idx in header_indices.items():
                 if idx < len(row):
-                    transaction[field] = row[idx]
+                    # Special handling for sales_tag to ensure it's treated as a string
+                    if field == 'sales_tag':
+                        if row[idx] is not None:
+                            transaction[field] = str(row[idx])
+                        else:
+                            transaction[field] = None
+                    else:
+                        transaction[field] = row[idx]
             
             # Only include rows with amount and date (valid transactions)
             if 'amount' in transaction and transaction['amount'] is not None and \
@@ -389,10 +396,22 @@ def verify_transactions(sales_master_df, collection_df):
             unit_number = str(unit_number).strip().upper()
         
         # Find related transactions for this unit
-        unit_transactions = collection_df[
-            collection_df['sales_tag'].notna() & 
-            collection_df['sales_tag'].astype(str).str.upper().str.contains(unit_number.replace(' ', '').replace('-', ''), na=False)
-        ]
+        try:
+            # Check if sales_tag column exists
+            if 'sales_tag' in collection_df.columns:
+                # Handle unit number formatting for matching
+                search_unit = unit_number.replace(' ', '').replace('-', '').upper()
+                
+                # More robust filtering with error handling
+                unit_transactions = collection_df[
+                    collection_df['sales_tag'].notna() & 
+                    collection_df['sales_tag'].astype(str).str.upper().str.replace(' ', '').str.replace('-', '').str.contains(search_unit, na=False, regex=False)
+                ]
+            else:
+                unit_transactions = pd.DataFrame()  # Empty DataFrame if no sales_tag column
+        except Exception as e:
+            print(f"Error processing sales_tag for unit {unit_number}: {str(e)}")
+            unit_transactions = pd.DataFrame()  # Fallback to empty DataFrame on error
         
         # Calculate expected amount with taxes
         expected_amount = customer.get('Amount received (Inc Taxes)', 0)
