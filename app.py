@@ -144,48 +144,31 @@ def extract_excel_date(excel_date):
         return None
 
 def identify_sales_master_sheet(workbook):
-    """Identify the Annex - Sales Master sheet based on content patterns"""
-    for sheet_name in workbook.sheetnames:
-        sheet = workbook[sheet_name]
-        
-        # Check first few rows for patterns indicating sales master
-        for row in sheet.iter_rows(min_row=1, max_row=10, max_col=10):
-            row_values = [cell.value for cell in row if cell.value]
-            row_text = ' '.join([str(val) for val in row_values])
-            
-            # Look for key column headers that would indicate this is the sales master
-            if any(['Unit' in str(val) for val in row_values]) and \
-               any(['Tower' in str(val) for val in row_values]) and \
-               any(['Customer' in str(val) for val in row_values]):
-                return sheet_name
-            
-            # Additional check for "Sr No" and "Unit Number" pattern
-            if any(['Sr' in str(val) and 'No' in str(val) for val in row_values]) and \
-               any(['Unit' in str(val) and 'Number' in str(val) for val in row_values]):
-                return sheet_name
+    """Return the Annex - Sales Master sheet"""
+    # Check if the exact sheet name exists
+    if "Annex - Sales Master" in workbook.sheetnames:
+        return "Annex - Sales Master"
     
-    return None
+    # Fallback: try to find a sheet with a similar name
+    for sheet_name in workbook.sheetnames:
+        if "Annex" in sheet_name and "Sales" in sheet_name:
+            return sheet_name
+    
+    # If still not found, return first sheet as last resort
+    return workbook.sheetnames[0] if workbook.sheetnames else None
 
 def identify_collection_sheet(workbook):
-    """Identify the Main Collection sheet based on content patterns"""
-    for sheet_name in workbook.sheetnames:
-        sheet = workbook[sheet_name]
-        
-        # Check first few rows for patterns indicating collection sheet
-        for row in sheet.iter_rows(min_row=1, max_row=10, max_col=10):
-            row_values = [cell.value for cell in row if cell.value]
-            row_text = ' '.join([str(val) for val in row_values])
-            
-            # Look for account number or collection indicators
-            if 'Collection' in row_text and ('Escrow' in row_text or 'A/c' in row_text or 'Account' in row_text):
-                return sheet_name
-            
-            # Look for transaction columns
-            if any(['Date' in str(val) for val in row_values]) and \
-               any(['Amount' in str(val) for val in row_values]) and \
-               any(['Description' in str(val) for val in row_values or 'Narration' in str(val) for val in row_values]):
-                return sheet_name
+    """Return the Main Collection AC P1_P2_P3 sheet"""
+    # Check if the exact sheet name exists
+    if "Main Collection AC P1_P2_P3" in workbook.sheetnames:
+        return "Main Collection AC P1_P2_P3"
     
+    # Fallback: try to find a sheet with a similar name
+    for sheet_name in workbook.sheetnames:
+        if "Main Collection" in sheet_name:
+            return sheet_name
+    
+    # If still not found, return None
     return None
 
 def parse_sales_master(sheet):
