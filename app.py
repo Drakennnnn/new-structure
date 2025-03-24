@@ -376,13 +376,13 @@ def parse_collection_transactions(sheet, accounts_info):
             row_has_data = False
             
             for c in range(20):  # Check first 20 columns
-                cell = sheet[XLSX.utils.encode_cell({r: r_idx, c: c})]
-                if cell and cell.v !== undefined:
+                cell = sheet[XLSX.utils.encode_cell({'r': r_idx, 'c': c})]
+                if cell and cell.v is not None:
                     row_data[c] = cell.v
-                    row_has_data = true
+                    row_has_data = True
             
             # Skip empty rows
-            if !row_has_data:
+            if not row_has_data:
                 continue
             
             transaction = {
@@ -391,34 +391,25 @@ def parse_collection_transactions(sheet, accounts_info):
                 'row': r_idx
             }
             
-            // Extract data based on header indices
-            for (const [field, idx] of Object.entries(header_indices)) {
-                if (row_data[idx] !== undefined) {
-                    // Special handling for sales_tag and type fields
-                    if (field === 'sales_tag') {
-                        transaction[field] = row_data[idx] !== null ? String(row_data[idx]) : null;
-                    } 
-                    else if (field === 'type') {
-                        transaction[field] = row_data[idx] !== null ? String(row_data[idx]) : null;
-                    }
-                    else {
-                        transaction[field] = row_data[idx];
-                    }
-                }
-            }
+            # Extract data based on header indices
+            for field, idx in header_indices.items():
+                if idx in row_data:
+                    # Special handling for sales_tag and type fields
+                    if field == 'sales_tag':
+                        transaction[field] = str(row_data[idx]) if row_data[idx] is not None else None
+                    elif field == 'type':
+                        transaction[field] = str(row_data[idx]) if row_data[idx] is not None else None
+                    else:
+                        transaction[field] = row_data[idx]
             
-            // Only include rows with amount and date (valid transactions)
-            if (transaction.amount !== undefined && transaction.amount !== null && 
-                transaction.date !== undefined && transaction.date !== null) {
-                // Convert Excel date to Python datetime
-                transaction.date = extract_excel_date(transaction.date);
-                all_transactions.push(transaction);
-            }
-        
-    }
+            # Only include rows with amount and date (valid transactions)
+            if 'amount' in transaction and transaction['amount'] is not None and \
+               'date' in transaction and transaction['date'] is not None:
+                # Convert Excel date to Python datetime
+                transaction['date'] = extract_excel_date(transaction['date'])
+                all_transactions.append(transaction)
     
-    return pd.DataFrame(all_transactions);
-}
+    return pd.DataFrame(all_transactions)
 
 def verify_transactions(sales_master_df, collection_df):
     """Verify transactions against customer data"""
