@@ -304,7 +304,7 @@ def identify_account_sections(sheet):
                 # Look for header row which should be right after account header
                 header_row = r_idx + 1
                 headers = list(sheet.iter_rows(min_row=header_row, max_row=header_row, values_only=True))[0]
-                
+
                 # Store header indices
                 header_indices = {}
                 for idx, header in enumerate(headers):
@@ -317,7 +317,7 @@ def identify_account_sections(sheet):
                             header_indices['description'] = idx
                         elif 'amount' in header_str:
                             header_indices['amount'] = idx
-                        elif 'dr' in header_str or 'cr' in header_str:
+                        elif ('dr' in header_str and 'cr' in header_str) or header_str == 'dr/cr':
                             header_indices['type'] = idx
                         elif 'sales' in header_str and 'tag' in header_str:
                             header_indices['sales_tag'] = idx
@@ -427,15 +427,25 @@ def verify_transactions(sales_master_df, collection_df):
             expected_tax_amount = 0
         
         # Calculate actual received from transactions
-        credit_transactions = unit_transactions[
-            unit_transactions['type'].notna() & 
-            unit_transactions['type'].astype(str).str.upper().str.contains('C', na=False)
-        ]
-        
-        debit_transactions = unit_transactions[
-            unit_transactions['type'].notna() & 
-            unit_transactions['type'].astype(str).str.upper().str.contains('D', na=False)
-        ]
+        try:
+            if 'type' in unit_transactions.columns:
+                credit_transactions = unit_transactions[
+                    unit_transactions['type'].notna() & 
+                    unit_transactions['type'].astype(str).str.upper().str.contains('C', na=False)
+                ]
+                
+                debit_transactions = unit_transactions[
+                    unit_transactions['type'].notna() & 
+                    unit_transactions['type'].astype(str).str.upper().str.contains('D', na=False)
+                ]
+            else:
+                # Fallback if type column is missing - assume all are credits
+                credit_transactions = unit_transactions
+                debit_transactions = pd.DataFrame()
+        except Exception as e:
+            print(f"Error processing transaction types: {str(e)}")
+            credit_transactions = pd.DataFrame()
+            debit_transactions = pd.DataFrame()
         
         total_credits = credit_transactions['amount'].sum() if not credit_transactions.empty else 0
         total_debits = debit_transactions['amount'].sum() if not debit_transactions.empty else 0
