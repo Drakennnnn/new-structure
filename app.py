@@ -1,1271 +1,1365 @@
 import streamlit as st
 import pandas as pd
-import plotly.express as px
-import plotly.graph_objects as go
-from datetime import datetime, timedelta
 import numpy as np
+import io
+import os
 import re
-import logging
-import warnings
-from typing import Dict, List, Optional, Tuple, Any
-from dataclasses import dataclass
-import json
-
-# Configure logging and suppress warnings
-logging.getLogger("streamlit_health_check").setLevel(logging.ERROR)
-warnings.filterwarnings('ignore')
-
-# Custom color schemes
-COLORS = {
-    'primary': ['#1f77b4', '#2ca02c', '#ff7f0e', '#d62728', '#9467bd', '#8c564b'],
-    'sequential': px.colors.sequential.Blues,
-    'background': 'rgba(0,0,0,0)',
-    'text': '#ffffff'
-}
-
-@dataclass
-class PhaseInfo:
-    """Store phase information"""
-    phase_number: int
-    account_number: str
-    start_row: int
-    end_row: Optional[int] = None
-    total_credits: float = 0.0
-    total_debits: float = 0.0
-    running_balance: float = 0.0
-
-class PhaseProcessor:
-    """Enhanced phase-wise data processing"""
-    
-    def __init__(self):
-        self.phase_pattern = r'Main Collection Escrow A/c Phase-(\d+)'
-        self.account_pattern = r'\d{14}'
-
-    def extract_phase_info(self, row: pd.Series) -> Optional[Tuple[int, str]]:
-        """Extract phase number and account number from row"""
-        for val in row.values:
-            val_str = str(val)
-            phase_match = re.search(self.phase_pattern, val_str)
-            if phase_match:
-                phase_num = int(phase_match.group(1))
-                # Find account number in this row
-                account_num = None
-                for cell in row.values:
-                    account_match = re.search(self.account_pattern, str(cell))
-                    if account_match:
-                        account_num = account_match.group(0)
-                        break
-                return phase_num, account_num
-        return None
-
-    def find_phase_sections(self, df: pd.DataFrame) -> Dict[str, PhaseInfo]:
-        """Find phase sections with improved detection"""
-        phases = {}
-        current_phase = None
-        
-        # Check first row for Phase-1
-        first_info = self.extract_phase_info(df.iloc[0])
-        if first_info:
-            phase_num, account_num = first_info
-            current_phase = f"Phase-{phase_num}"
-            phases[current_phase] = PhaseInfo(
-                phase_number=phase_num,
-                account_number=account_num,
-                start_row=1  # Skip header row
-            )
-        
-        # Find other phases
-        for idx, row in df.iterrows():
-            phase_info = self.extract_phase_info(row)
-            if phase_info:
-                phase_num, account_num = phase_info
-                
-                # Set end for previous phase
-                if current_phase:
-                    phases[current_phase].end_row = idx - 1
-                
-                current_phase = f"Phase-{phase_num}"
-                phases[current_phase] = PhaseInfo(
-                    phase_number=phase_num,
-                    account_number=account_num,
-                    start_row=idx + 1
-                )
-        
-        # Set end for last phase
-        if current_phase:
-            phases[current_phase].end_row = len(df)
-        
-        return phases
-
-    def process_phase_data(self, df: pd.DataFrame, phase_info: PhaseInfo) -> pd.DataFrame:
-        """Process data for a specific phase"""
-        if phase_info.end_row is None:
-            phase_info.end_row = len(df)
-            
-        phase_data = df.iloc[phase_info.start_row:phase_info.end_row].copy()
-        
-        # Clean amount data
-        phase_data['Amount'] = pd.to_numeric(
-            phase_data['Amount'].astype(str).str.replace(',', ''),
-            errors='coerce'
-        ).fillna(0)
-        
-        # Calculate running balance
-        phase_data['Running Balance'] = phase_data.apply(
-            lambda x: x['Amount'] if x['Dr/Cr'] == 'C' else -x['Amount'],
-            axis=1
-        ).cumsum()
-        
-        # Update phase totals
-        phase_info.total_credits = phase_data[phase_data['Dr/Cr'] == 'C']['Amount'].sum()
-        phase_info.total_debits = phase_data[phase_data['Dr/Cr'] == 'D']['Amount'].sum()
-        phase_info.running_balance = phase_data['Running Balance'].iloc[-1] if not phase_data.empty else 0
-        
-        # Add flags
-        phase_data['Is_Bounce'] = phase_data.apply(
-            lambda x: 'Bounce' in str(x.get('Sales Tag', '')) or 
-                     'RET-' in str(x.get('Description', '')),
-            axis=1
-        )
-        
-        phase_data['Receipt_Status'] = phase_data['Sales Tag'].apply(
-            lambda x: 'Pending' if 'RECEIPT NOT GENERATED' in str(x) else 'Generated'
-        )
-        
-        return phase_data
-
-class TransactionProcessor:
-    """Enhanced transaction processing and categorization"""
-    
-    def __init__(self):
-        self.transaction_patterns = {
-            'Cheque': ['CHQ', 'CHEQUE', 'MICR'],
-            'UPI': ['UPI'],
-            'NEFT': ['NEFT'],
-            'RTGS': ['RTGS'],
-            'IMPS': ['IMPS'],
-            'Transfer': ['TRANSFER', 'TRF'],
-            'Cash': ['CASH'],
-            'DD': ['DD', 'DEMAND DRAFT']
-        }
-
-    def categorize_transaction(self, description: str) -> str:
-        """Categorize transaction based on description"""
-        description = str(description).upper()
-        
-        for category, patterns in self.transaction_patterns.items():
-            if any(pattern in description for pattern in patterns):
-                return category
-        
-        return 'Other'
-
-    def extract_unit_info(self, tag: str) -> Optional[str]:
-        """Extract unit number from sales tag"""
-        if pd.isna(tag):
-            return None
-            
-        tag = str(tag).strip()
-        unit_match = re.search(r'CA \d{2}-\d+', tag)
-        if unit_match:
-            return unit_match.group(0)
-        return None
-
-    def process_transaction(self, row: pd.Series) -> Dict[str, Any]:
-        """Process a single transaction with enhanced details"""
-        return {
-            'date': pd.to_datetime(row['Value Date'], errors='coerce'),
-            'amount': pd.to_numeric(
-                str(row['Amount']).replace(',', ''), 
-                errors='coerce'
-            ),
-            'type': 'CREDIT' if row['Dr/Cr'] == 'C' else 'DEBIT',
-            'is_bounce': bool(
-                row.get('Is_Bounce', False) or 
-                'Bounce' in str(row.get('Sales Tag', ''))
-            ),
-            'receipt_status': row.get('Receipt_Status', 'Generated'),
-            'transaction_mode': self.categorize_transaction(row['Description']),
-            'unit_no': self.extract_unit_info(row.get('Sales Tag', '')),
-            'phase': row.get('Phase', 'Unknown'),
-            'account': row.get('Account', 'Unknown')
-        }
-
-@dataclass
-class ProcessedFile:
-    """Store processed data from a single file"""
-    filename: str
-    collection_df: pd.DataFrame
-    sales_master_df: pd.DataFrame
-    unsold_df: pd.DataFrame
-    phases: Dict[str, PhaseInfo]
-    date: datetime
-
-class DataProcessor:
-    """Enhanced data processing with multiple file support"""
-    def __init__(self):
-        self.phase_processor = PhaseProcessor()
-        self.transaction_processor = TransactionProcessor()
-        
-    def process_dates(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Process date columns with enhanced format handling"""
-        date_formats = [
-            '%d/%m/%Y %H:%M:%S',
-            '%d/%m/%Y',
-            '%d-%m-%Y',
-            '%Y-%m-%d %H:%M:%S',
-            '%Y-%m-%d',
-            '%d-%b-%y',
-            '%d-%B-%y',
-            '%d/%b/%y'
-        ]
-        
-        for col in df.columns:
-            if any(text in col.lower() for text in ['date', 'dt']):
-                for fmt in date_formats:
-                    try:
-                        df[col] = pd.to_datetime(df[col], format=fmt, errors='coerce')
-                        if not df[col].isna().all():
-                            break
-                    except:
-                        continue
-                        
-                # If all formats failed, try a final generic parse
-                if df[col].isna().all():
-                    df[col] = pd.to_datetime(df[col], errors='coerce')
-        
-        return df
-
-    def process_amounts(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Process amount columns with enhanced validation"""
-        amount_patterns = [
-            'amount', 'balance', 'consideration', 'demanded', 
-            'received', 'receivables', 'total', 'bsp'
-        ]
-        
-        for col in df.columns:
-            if any(pattern in col.lower() for pattern in amount_patterns):
-                df[col] = (
-                    df[col]
-                    .astype(str)
-                    .str.replace('₹', '')
-                    .str.replace(',', '')
-                    .str.replace(' ', '')
-                    .str.strip()
-                )
-                df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
-        
-        return df
-
-    def process_collection_account(self, df: pd.DataFrame) -> Tuple[pd.DataFrame, Dict[str, PhaseInfo]]:
-        """Process collection account data with enhanced phase handling"""
-        df = df.copy()
-        
-        # Find phase sections
-        phases = self.phase_processor.find_phase_sections(df)
-        
-        # Process dates and amounts
-        df = self.process_dates(df)
-        df = self.process_amounts(df)
-        
-        # Add payment mode
-        df['Payment Mode'] = df['Description'].apply(
-            self.transaction_processor.categorize_transaction
-        )
-        
-        # Process each phase
-        processed_phases = {}
-        for phase_name, phase_info in phases.items():
-            processed_df = self.phase_processor.process_phase_data(df, phase_info)
-            processed_df['Phase'] = phase_name
-            processed_df['Account'] = phase_info.account_number
-            processed_phases[phase_name] = processed_df
-        
-        # Combine processed data
-        processed_df = pd.concat(processed_phases.values(), ignore_index=True)
-        
-        return processed_df, phases
-
-    def process_sales_master(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Process sales master data with enhanced column detection"""
-        df = df.copy()
-        
-        # Skip summary rows
-        header_row = None
-        for idx, row in df.iterrows():
-            if row.notna().any() and any('Sr. No.' in str(val) for val in row):
-                header_row = idx
-                break
-        
-        if header_row is not None:
-            df = df.iloc[header_row:].reset_index(drop=True)
-            df.columns = df.iloc[0]
-            df = df.iloc[1:].reset_index(drop=True)
-        
-        # Clean column names
-        df.columns = df.columns.str.strip()
-        
-        # Process dates and amounts
-        df = self.process_dates(df)
-        df = self.process_amounts(df)
-        
-        # Calculate collection percentage
-        amount_cols = [col for col in df.columns if 'amount' in col.lower()]
-        received_col = next((col for col in amount_cols if 'received' in col.lower()), None)
-        demanded_col = next((col for col in amount_cols if 'demanded' in col.lower()), None)
-        
-        if received_col and demanded_col:
-            df['Collection Percentage'] = (
-                df[received_col] / df[demanded_col] * 100
-            ).clip(0, 100)
-        
-        return df
-
-    def process_unsold_inventory(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Process unsold inventory with enhanced validation"""
-        df = df.copy()
-        
-        # Clean area column
-        area_cols = [col for col in df.columns if 'area' in col.lower()]
-        if area_cols:
-            for col in area_cols:
-                df[col] = pd.to_numeric(
-                    df[col].astype(str).str.replace(',', ''),
-                    errors='coerce'
-                ).fillna(0)
-        
-        # Add status if missing
-        if 'Status' not in df.columns:
-            df['Status'] = 'Unsold'
-        
-        return df
-
-    def process_file(self, file) -> ProcessedFile:
-        """Process a single Excel file with enhanced error handling"""
-        try:
-            excel_file = pd.ExcelFile(file)
-            filename = getattr(file, 'name', 'Unknown')
-            
-            # Process Collection Account
-            collection_df = pd.read_excel(
-                excel_file, 
-                'Main Collection AC P1_P2_P3',
-                skiprows=1
-            )
-            collection_df, phases = self.process_collection_account(collection_df)
-            
-            # Process Sales Master
-            sales_master_df = pd.read_excel(
-                excel_file,
-                'Annex - Sales Master',
-                skiprows=3
-            )
-            sales_master_df = self.process_sales_master(sales_master_df)
-            
-            # Process Unsold Inventory
-            unsold_df = pd.read_excel(
-                excel_file,
-                'Un Sold Inventory'
-            )
-            unsold_df = self.process_unsold_inventory(unsold_df)
-            
-            # Extract date from filename or use current date
-            try:
-                date_str = re.search(r'\d{8}', filename)
-                if date_str:
-                    file_date = datetime.strptime(date_str.group(0), '%Y%m%d')
-                else:
-                    file_date = datetime.now()
-            except:
-                file_date = datetime.now()
-            
-            return ProcessedFile(
-                filename=filename,
-                collection_df=collection_df,
-                sales_master_df=sales_master_df,
-                unsold_df=unsold_df,
-                phases=phases,
-                date=file_date
-            )
-        except Exception as e:
-            raise Exception(f"Error processing file {getattr(file, 'name', 'Unknown')}: {str(e)}")
-
-def format_currency(value: float) -> str:
-    """Format currency values with enhanced validation"""
-    try:
-        return f"₹{float(value):,.2f}"
-    except:
-        return "₹0.00"
-
-def format_percentage(value: float) -> str:
-    """Format percentage values with enhanced validation"""
-    try:
-        return f"{float(value):.1f}%"
-    except:
-        return "0.0%"
-
-def create_phase_summary(collection_df: pd.DataFrame, 
-                        phases: Dict[str, PhaseInfo]) -> Tuple[pd.DataFrame, pd.DataFrame]:
-    """Create phase-wise summary with enhanced aggregation"""
-    summaries = []
-    
-    try:
-        for phase_name, phase_info in phases.items():
-            try:
-                phase_data = collection_df[
-                    collection_df['Phase'] == phase_name
-                ]
-                
-                credits = phase_data[
-                    phase_data['Dr/Cr'].str.strip().str.upper() == 'C'
-                ]['Amount'].sum()
-                
-                debits = phase_data[
-                    phase_data['Dr/Cr'].str.strip().str.upper() == 'D'
-                ]['Amount'].sum()
-                
-                last_balance = phase_data['Running Balance'].iloc[-1] if len(phase_data) > 0 else 0
-                
-                summaries.append({
-                    'Phase': phase_name,
-                    'Credits': float(credits),
-                    'Debits': float(debits),
-                    'Net': float(credits - debits),
-                    'Last_Balance': float(last_balance),
-                    'Account': phase_info.account_number
-                })
-            except Exception as e:
-                st.error(f"Error processing phase {phase_name}: {str(e)}")
-                continue
-        
-        # Create summary DataFrame
-        summary_df = pd.DataFrame(summaries)
-        
-        # Create plot DataFrame
-        plot_df = pd.melt(
-            summary_df,
-            id_vars=['Phase'],
-            value_vars=['Credits', 'Debits'],
-            var_name='Type',
-            value_name='Amount'
-        )
-        
-        return plot_df, summary_df
-    except Exception as e:
-        st.error(f"Error creating summary: {str(e)}")
-        return pd.DataFrame(columns=['Phase', 'Type', 'Amount']), pd.DataFrame()
-
-def create_payment_summary(df: pd.DataFrame) -> pd.DataFrame:
-    """Create payment mode summary with enhanced aggregation"""
-    if df.empty:
-        return pd.DataFrame(columns=['Mode', 'Amount', 'Count', 'Percentage'])
-    
-    try:    
-        payment_summary = df[
-            df['Dr/Cr'] == 'C'
-        ].groupby('Payment Mode').agg({
-            'Amount': ['sum', 'count']
-        }).reset_index()
-        
-        payment_summary.columns = ['Mode', 'Amount', 'Count']
-        total_amount = payment_summary['Amount'].sum()
-        
-        if total_amount > 0:
-            payment_summary['Percentage'] = (
-                payment_summary['Amount'] / total_amount * 100
-            )
-        else:
-            payment_summary['Percentage'] = 0
-        
-        return payment_summary
-    except Exception as e:
-        st.error(f"Error creating payment summary: {str(e)}")
-        return pd.DataFrame(columns=['Mode', 'Amount', 'Count', 'Percentage'])
-
-def compare_periods(df1: ProcessedFile, df2: ProcessedFile) -> Dict[str, pd.DataFrame]:
-    """Compare data between two periods"""
-    try:
-        comparisons = {}
-        
-        # Collection comparison
-        collection_comparison = pd.DataFrame({
-            'Metric': ['Total Collections', 'Total Units', 'Collection Percentage'],
-            df1.filename: [
-                df1.collection_df[df1.collection_df['Dr/Cr'] == 'C']['Amount'].sum(),
-                len(df1.sales_master_df),
-                df1.sales_master_df['Collection Percentage'].mean() if 'Collection Percentage' in df1.sales_master_df else 0
-            ],
-            df2.filename: [
-                df2.collection_df[df2.collection_df['Dr/Cr'] == 'C']['Amount'].sum(),
-                len(df2.sales_master_df),
-                df2.sales_master_df['Collection Percentage'].mean() if 'Collection Percentage' in df2.sales_master_df else 0
-            ]
-        })
-        
-        collection_comparison['Change'] = (
-            collection_comparison[df2.filename] - 
-            collection_comparison[df1.filename]
-        )
-        
-        comparisons['collection'] = collection_comparison
-        
-        # Payment mode comparison
-        payment_summary1 = create_payment_summary(df1.collection_df)
-        payment_summary2 = create_payment_summary(df2.collection_df)
-        
-        payment_comparison = pd.merge(
-            payment_summary1, 
-            payment_summary2,
-            on='Mode',
-            suffixes=('_1', '_2'),
-            how='outer'
-        ).fillna(0)
-        
-        comparisons['payment_modes'] = payment_comparison
-        
-        return comparisons
-    except Exception as e:
-        st.error(f"Error comparing periods: {str(e)}")
-        return {}
-
-def process_collection_trends(df: pd.DataFrame, 
-                            start_date: Optional[datetime] = None,
-                            end_date: Optional[datetime] = None) -> pd.DataFrame:
-    """Process collection trends with enhanced date handling"""
-    try:
-        # Ensure Value Date is datetime
-        df['Value Date'] = pd.to_datetime(df['Value Date'], errors='coerce')
-        df = df[df['Value Date'].notna()]
-        
-        if start_date and end_date:
-            df = df[
-                (df['Value Date'].dt.date >= start_date) &
-                (df['Value Date'].dt.date <= end_date)
-            ]
-        
-        # Calculate monthly trends
-        monthly = df[df['Dr/Cr'] == 'C'].copy()
-        monthly['Month'] = monthly['Value Date'].dt.to_period('M')
-        monthly_summary = monthly.groupby('Month')['Amount'].sum().reset_index()
-        monthly_summary['Month'] = monthly_summary['Month'].dt.to_timestamp()
-        
-        return monthly_summary
-    except Exception as e:
-        st.error(f"Error processing collection trends: {str(e)}")
-        return pd.DataFrame(columns=['Month', 'Amount'])
-
-def filter_collection_data(df: pd.DataFrame, 
-                         phase_name: Optional[str] = None,
-                         start_date: Optional[datetime] = None,
-                         end_date: Optional[datetime] = None,
-                         payment_modes: Optional[List[str]] = None) -> pd.DataFrame:
-    """Filter collection data with enhanced validation"""
-    try:
-        filtered_df = df.copy()
-        
-        if phase_name and phase_name != "All Phases":
-            filtered_df = filtered_df[filtered_df['Phase'] == phase_name]
-        
-        if start_date and end_date:
-            filtered_df['Value Date'] = pd.to_datetime(
-                filtered_df['Value Date'], 
-                errors='coerce'
-            )
-            filtered_df = filtered_df[
-                (filtered_df['Value Date'].dt.date >= start_date) &
-                (filtered_df['Value Date'].dt.date <= end_date)
-            ]
-        
-        if payment_modes:
-            filtered_df = filtered_df[
-                filtered_df['Payment Mode'].isin(payment_modes)
-            ]
-        
-        return filtered_df
-    except Exception as e:
-        st.error(f"Error filtering data: {str(e)}")
-        return df
+import base64
+from datetime import datetime
+import openpyxl
+from openpyxl.styles import Font, Alignment, Border, Side, PatternFill
+from openpyxl.utils import get_column_letter
+from openpyxl.utils.dataframe import dataframe_to_rows
+import tempfile
+import zipfile
+from docxtpl import DocxTemplate
 
 # Set page configuration
 st.set_page_config(
-    page_title="Real Estate Analytics Dashboard",
-    page_icon="🏢",
+    page_title="Real Estate Cost Sheet Generator",
+    page_icon="🏙️",
     layout="wide",
     initial_sidebar_state="expanded"
 )
 
-# Custom CSS
+# Define CSS styles
 st.markdown("""
-    <style>
-    .main { 
-        padding: 0rem 1rem;
-        color: white;
-    }
-    .stSelectbox { margin-bottom: 1rem; }
-    .plot-container {
-        margin-bottom: 2rem;
-        background-color: rgba(0,0,0,0) !important;
-        padding: 1rem;
-        border-radius: 0.5rem;
-    }
-    .custom-metric {
-        background-color: rgba(255,255,255,0.1);
-        padding: 1rem;
-        border-radius: 0.5rem;
-    }
-    .section-title {
-        font-size: 1.5rem;
+<style>
+    .main-header {
+        font-size: 30px;
         font-weight: bold;
-        margin-bottom: 1rem;
-        color: #ffffff;
+        color: #1E3A8A;
+        margin-bottom: 20px;
     }
-    .dataframe {
-        font-size: 12px;
-        color: white !important;
+    .section-header {
+        font-size: 24px;
+        font-weight: bold;
+        color: #2563EB;
+        margin-top: 30px;
+        margin-bottom: 15px;
+        padding-bottom: 5px;
+        border-bottom: 2px solid #BFDBFE;
     }
-    .stDataFrame {
-        background-color: rgba(0,0,0,0) !important;
-        border-radius: 0.5rem;
-        padding: 1rem;
+    .info-text {
+        font-size: 16px;
+        color: #1F2937;
+        margin-bottom: 20px;
     }
-    div[data-testid="stMetricValue"] {
-        font-size: 2rem;
-        color: white !important;
+    .success-box {
+        padding: 15px;
+        border-radius: 5px;
+        background-color: #ECFDF5;
+        border-left: 5px solid #10B981;
+        margin-bottom: 20px;
     }
-    .stAlert {
-        border-radius: 0.5rem;
+    .warning-box {
+        padding: 15px;
+        border-radius: 5px;
+        background-color: #FFFBEB;
+        border-left: 5px solid #F59E0B;
+        margin-bottom: 20px;
     }
-    .plot-container > div {
-        border-radius: 0.5rem;
+    .error-box {
+        padding: 15px;
+        border-radius: 5px;
+        background-color: #FEF2F2;
+        border-left: 5px solid #EF4444;
+        margin-bottom: 20px;
     }
-    div.css-12w0qpk.e1tzin5v1 {
-        background-color: rgba(255,255,255,0.1);
-        border-radius: 0.5rem;
-        padding: 1rem;
+    .status-badge {
+        display: inline-block;
+        padding: 3px 8px;
+        border-radius: 12px;
+        font-size: 14px;
+        font-weight: bold;
     }
-    div.css-1r6slb0.e1tzin5v2 {
-        background-color: rgba(255,255,255,0.1);
-        border-radius: 0.5rem;
-        padding: 1rem;
+    .status-verified {
+        background-color: #D1FAE5;
+        color: #047857;
     }
-    </style>
+    .status-warning {
+        background-color: #FEF3C7;
+        color: #B45309;
+    }
+    .status-error {
+        background-color: #FEE2E2;
+        color: #B91C1C;
+    }
+    .footer {
+        margin-top: 50px;
+        text-align: center;
+        color: #6B7280;
+        font-size: 14px;
+    }
+    .stTabs [data-baseweb="tab-list"] {
+        gap: 8px;
+    }
+    .stTabs [data-baseweb="tab"] {
+        height: 50px;
+        white-space: pre-wrap;
+        background-color: #F3F4F6;
+        border-radius: 4px 4px 0px 0px;
+        gap: 1px;
+        padding-top: 10px;
+        padding-bottom: 10px;
+    }
+    .stTabs [aria-selected="true"] {
+        background-color: #DBEAFE;
+        border-radius: 4px 4px 0px 0px;
+    }
+</style>
 """, unsafe_allow_html=True)
 
-def main():
-    st.title("Real Estate Analytics Dashboard")
-    st.markdown("---")
+# Header
+st.markdown('<div class="main-header">Real Estate Cost Sheet Generator</div>', unsafe_allow_html=True)
 
-    # Initialize data processor
-    processor = DataProcessor()
+# Initialize session state for storing data
+if 'sales_master_df' not in st.session_state:
+    st.session_state.sales_master_df = None
+if 'collection_df' not in st.session_state:
+    st.session_state.collection_df = None
+if 'accounts_info' not in st.session_state:
+    st.session_state.accounts_info = None
+if 'verification_results' not in st.session_state:
+    st.session_state.verification_results = {}
+if 'selected_customers' not in st.session_state:
+    st.session_state.selected_customers = []
+if 'noc_template' not in st.session_state:
+    st.session_state.noc_template = None
+if 'preview_data' not in st.session_state:
+    st.session_state.preview_data = {}
 
-    # Initialize session state
-    if 'processed_files' not in st.session_state:
-        st.session_state.processed_files = {}
+# Helper functions
+def extract_excel_date(excel_date):
+    """Convert Excel date number to Python datetime"""
+    try:
+        # Excel date starts from 1900-01-01
+        if isinstance(excel_date, (int, float)):
+            return pd.to_datetime('1899-12-30') + pd.Timedelta(days=int(excel_date))
+        elif isinstance(excel_date, str):
+            return pd.to_datetime(excel_date, errors='coerce')
+        else:
+            return excel_date
+    except:
+        return None
 
-    # File upload
-    uploaded_files = st.file_uploader(
-        "Upload MIS Excel File(s)",
-        type=['xlsx', 'xls'],
-        accept_multiple_files=True
-    )
-
-    if uploaded_files:
-        for file in uploaded_files:
-            try:
-                if file.name not in st.session_state.processed_files:
-                    with st.spinner(f'Processing {file.name}...'):
-                        processed_file = processor.process_file(file)
-                        st.session_state.processed_files[file.name] = processed_file
-                        st.success(f"Processed {file.name} successfully!")
-            except Exception as e:
-                st.error(f"Error processing {file.name}: {str(e)}")
-
-    if st.session_state.processed_files:
-        # File selection
-        selected_file = st.selectbox(
-            "Select File to Analyze",
-            options=list(st.session_state.processed_files.keys()),
-            key="file_selector"
-        )
+def identify_sales_master_sheet(workbook):
+    """Identify the Annex - Sales Master sheet based on content patterns"""
+    for sheet_name in workbook.sheetnames:
+        sheet = workbook[sheet_name]
         
-        current_file = st.session_state.processed_files[selected_file]
-
-        # Compare with another file
-        if len(st.session_state.processed_files) > 1:
-            comparison_file = st.selectbox(
-                "Compare with",
-                options=[f for f in st.session_state.processed_files.keys() if f != selected_file],
-                key="comparison_selector"
-            )
+        # Check first few rows for patterns indicating sales master
+        for row in sheet.iter_rows(min_row=1, max_row=10, max_col=10):
+            row_values = [cell.value for cell in row if cell.value]
+            row_text = ' '.join([str(val) for val in row_values])
             
-            if comparison_file:
-                comparisons = compare_periods(
-                    current_file,
-                    st.session_state.processed_files[comparison_file]
-                )
-                
-                st.markdown("### Period Comparison")
-                st.dataframe(comparisons['collection'])
-
-        # Main tabs
-        tab1, tab2, tab3, tab4 = st.tabs([
-            "Project Overview",
-            "Collection Analysis",
-            "Sales Status",
-            "Unit Details"
-        ])
-
-        with tab1:
-            st.markdown("### Project Overview")
+            # Look for key column headers that would indicate this is the sales master
+            if any(['Unit' in str(val) for val in row_values]) and \
+               any(['Tower' in str(val) for val in row_values]) and \
+               any(['Customer' in str(val) for val in row_values]):
+                return sheet_name
             
-            # Phase selection
-            selected_phase = st.selectbox(
-                "Select Phase",
-                ["All Phases"] + list(current_file.phases.keys())
-            )
+            # Additional check for "Sr No" and "Unit Number" pattern
+            if any(['Sr' in str(val) and 'No' in str(val) for val in row_values]) and \
+               any(['Unit' in str(val) and 'Number' in str(val) for val in row_values]):
+                return sheet_name
+    
+    return None
+
+def identify_collection_sheet(workbook):
+    """Identify the Main Collection sheet based on content patterns"""
+    for sheet_name in workbook.sheetnames:
+        sheet = workbook[sheet_name]
+        
+        # Check first few rows for patterns indicating collection sheet
+        for row in sheet.iter_rows(min_row=1, max_row=10, max_col=10):
+            row_values = [cell.value for cell in row if cell.value]
+            row_text = ' '.join([str(val) for val in row_values])
             
-            if selected_phase != "All Phases":
-                phase_info = current_file.phases[selected_phase]
-                filtered_df = current_file.collection_df[
-                    current_file.collection_df['Phase'] == selected_phase
-                ]
-                st.info(f"Showing data for {selected_phase} (Account: {phase_info.account_number})")
+            # Look for account number or collection indicators
+            if 'Collection' in row_text and ('Escrow' in row_text or 'A/c' in row_text or 'Account' in row_text):
+                return sheet_name
+            
+            # Look for transaction columns
+            if any(['Date' in str(val) for val in row_values]) and \
+               any(['Amount' in str(val) for val in row_values]) and \
+               any(['Description' in str(val) for val in row_values or 'Narration' in str(val) for val in row_values]):
+                return sheet_name
+    
+    return None
+
+def parse_sales_master(sheet):
+    """Parse the Annex - Sales Master sheet and return a DataFrame"""
+    # Find header row - look for key column names
+    header_row = None
+    header_cols = {}
+    
+    for r_idx, row in enumerate(sheet.iter_rows(min_row=1, max_row=10, values_only=True)):
+        col_matches = 0
+        for c_idx, cell in enumerate(row):
+            if cell and isinstance(cell, str):
+                cell_lower = cell.lower()
+                if any(key in cell_lower for key in ['sr no', 'customer', 'unit', 'tower', 'booking']):
+                    col_matches += 1
+        
+        if col_matches >= 3:  # Found at least 3 key columns
+            header_row = r_idx + 1
+            break
+    
+    if header_row is None:
+        return None
+    
+    # Map column indices to expected column names
+    header_values = list(sheet.iter_rows(min_row=header_row, max_row=header_row, values_only=True))[0]
+    
+    # Map common column variations to standardized names
+    column_mapping = {}
+    for idx, header in enumerate(header_values):
+        if header:
+            header_str = str(header).lower()
+            
+            # Map variations to standard names
+            if any(term in header_str for term in ['sr', 'serial']):
+                column_mapping[idx] = 'Sr No'
+            elif 'customer' in header_str or 'name' in header_str:
+                column_mapping[idx] = 'Name of Customer'
+            elif 'unit' in header_str and 'number' in header_str:
+                column_mapping[idx] = 'Unit Number'
+            elif 'tower' in header_str:
+                column_mapping[idx] = 'Tower No'
+            elif 'booking' in header_str and 'date' in header_str:
+                column_mapping[idx] = 'Booking date'
+            elif 'status' in header_str:
+                column_mapping[idx] = 'Booking Status'
+            elif 'payment' in header_str and 'plan' in header_str:
+                column_mapping[idx] = 'Payment Plan'
+            elif 'area' in header_str and not 'carpet' in header_str:
+                column_mapping[idx] = 'Area(sqft)'
+            elif 'carpet' in header_str:
+                column_mapping[idx] = 'Carpet Area(sqft)'
+            elif 'bsp' in header_str and 'sqft' in header_str:
+                column_mapping[idx] = 'BSP/SqFt'
+            elif 'basic' in header_str and 'price' in header_str:
+                column_mapping[idx] = 'Basic Price ( Exl Taxes)'
+            elif 'received' in header_str and ('amount' in header_str or 'amt' in header_str) and not 'tax' in header_str:
+                column_mapping[idx] = 'Amount received ( Exl Taxes)'
+            elif 'tax' in header_str and 'received' in header_str:
+                column_mapping[idx] = 'Taxes Received'
+            elif 'received' in header_str and ('inc' in header_str or 'with' in header_str) and 'tax' in header_str:
+                column_mapping[idx] = 'Amount received (Inc Taxes)'
+            elif 'balance' in header_str:
+                column_mapping[idx] = 'Balance receivables (Total Sale Consideration )'
+            elif 'broker' in header_str and 'name' in header_str:
+                column_mapping[idx] = 'Broker Name'
             else:
-                filtered_df = current_file.collection_df
+                # Keep original header for other columns
+                column_mapping[idx] = header
+    
+    # Read data into a DataFrame
+    data = []
+    for row in sheet.iter_rows(min_row=header_row + 1, values_only=True):
+        # Skip completely empty rows
+        if all(cell is None or cell == '' for cell in row):
+            continue
+        
+        row_data = {}
+        for idx, cell in enumerate(row):
+            if idx in column_mapping:
+                row_data[column_mapping[idx]] = cell
+        
+        # Only add rows with unit number or customer name
+        if ('Unit Number' in row_data and row_data['Unit Number']) or \
+           ('Name of Customer' in row_data and row_data['Name of Customer']):
+            data.append(row_data)
+    
+    df = pd.DataFrame(data)
+    
+    # Process date columns
+    date_columns = [col for col in df.columns if 'date' in col.lower()]
+    for col in date_columns:
+        df[col] = df[col].apply(extract_excel_date)
+    
+    return df
 
-            # Summary metrics
-            col1, col2, col3, col4 = st.columns(4)
+def identify_account_sections(sheet):
+    """Identify different account sections in the collection sheet"""
+    accounts = []
+    current_account = None
+    
+    for r_idx, row in enumerate(sheet.iter_rows(min_row=1, max_row=sheet.max_row, max_col=10, values_only=True)):
+        row_text = ' '.join([str(cell) for cell in row if cell is not None])
+        
+        # Look for account headers (Main Collection Escrow A/c Phase-X patterns)
+        if ('Main Collection' in row_text or 'Collection Account' in row_text) and \
+           ('Escrow' in row_text or 'A/c' in row_text):
             
-            with col1:
-                total_units = len(current_file.sales_master_df)
-                unsold_units = len(current_file.unsold_df)
-                st.metric(
-                    "Total Units",
-                    f"{total_units}",
-                    delta=f"{unsold_units} Unsold",
-                    delta_color="inverse"
-                )
-
-            with col2:
-                # Find consideration column
-                consideration_cols = [
-                    col for col in current_file.sales_master_df.columns 
-                    if 'consideration' in col.lower()
-                ]
-                if consideration_cols:
-                    total_consideration = current_file.sales_master_df[
-                        consideration_cols[0]
-                    ].sum()
-                    st.metric(
-                        "Total Consideration",
-                        format_currency(total_consideration),
-                        delta="View Details"
-                    )
-
-            with col3:
-                # Find collection columns
-                collection_cols = {
-                    'received': next((col for col in current_file.sales_master_df.columns 
-                                    if 'received' in col.lower()), None),
-                    'demanded': next((col for col in current_file.sales_master_df.columns 
-                                    if 'demanded' in col.lower()), None)
+            # Extract account name and number
+            account_name = None
+            account_number = None
+            
+            for cell in row:
+                if cell and 'Collection' in str(cell):
+                    account_name = str(cell)
+                elif cell and isinstance(cell, (int, float)) and len(str(int(cell))) > 8:
+                    # Likely an account number (long number)
+                    account_number = str(int(cell))
+            
+            if account_name:
+                # Close previous account if any
+                if current_account:
+                    current_account['end_row'] = r_idx - 1
+                    accounts.append(current_account)
+                
+                # Start new account
+                current_account = {
+                    'name': account_name,
+                    'number': account_number,
+                    'start_row': r_idx + 1,
+                    'end_row': None
                 }
                 
-                if all(collection_cols.values()):
-                    total_collection = current_file.sales_master_df[
-                        collection_cols['received']
-                    ].sum()
-                    total_demand = current_file.sales_master_df[
-                        collection_cols['demanded']
-                    ].sum()
-                    
-                    collection_percentage = (total_collection / total_demand * 100)
-                    pending_collection = total_demand - total_collection
-                    
-                    st.metric(
-                        "Collection Achievement",
-                        format_percentage(collection_percentage),
-                        delta=format_currency(pending_collection),
-                        delta_color="inverse"
-                    )
-
-            with col4:
-                # Find area column
-                area_cols = [
-                    col for col in current_file.sales_master_df.columns 
-                    if 'area' in col.lower()
-                ]
-                if area_cols:
-                    area_col = area_cols[0]
-                    total_area = current_file.sales_master_df[area_col].sum()
-                    unsold_area = current_file.unsold_df[area_col].sum() if area_col in current_file.unsold_df else 0
-                    
-                    st.metric(
-                        "Total Area",
-                        f"{total_area:,.0f} sq.ft",
-                        delta=f"{unsold_area:,.0f} sq.ft unsold",
-                        delta_color="inverse"
-                    )
-
-            # Phase-wise collection summary
-            st.markdown("### Phase-wise Collection Summary")
-            
-            plot_df, summary_df = create_phase_summary(
-                current_file.collection_df,
-                current_file.phases
-            )
-            
-            if not plot_df.empty:
-                col1, col2 = st.columns(2)
+                # Look for header row which should be right after account header
+                header_row = r_idx + 1
+                headers = list(sheet.iter_rows(min_row=header_row, max_row=header_row, values_only=True))[0]
                 
-                with col1:
-                    fig_phase = px.bar(
-                        plot_df,
-                        x='Phase',
-                        y='Amount',
-                        color='Type',
-                        title="Collections by Phase",
-                        barmode='group',
-                        color_discrete_sequence=COLORS['primary']
-                    )
-                    fig_phase.update_layout(
-                        plot_bgcolor=COLORS['background'],
-                        paper_bgcolor=COLORS['background'],
-                        font_color=COLORS['text']
-                    )
-                    st.plotly_chart(fig_phase, use_container_width=True)
+                # Store header indices
+                header_indices = {}
+                for idx, header in enumerate(headers):
+                    if header:
+                        header_str = str(header).lower()
+                        
+                        if 'date' in header_str:
+                            header_indices['date'] = idx
+                        elif 'description' in header_str or 'narration' in header_str:
+                            header_indices['description'] = idx
+                        elif 'amount' in header_str:
+                            header_indices['amount'] = idx
+                        elif 'dr' in header_str or 'cr' in header_str:
+                            header_indices['type'] = idx
+                        elif 'sales' in header_str and 'tag' in header_str:
+                            header_indices['sales_tag'] = idx
+                        elif 'running' in header_str and 'total' in header_str:
+                            header_indices['running_total'] = idx
                 
-                with col2:
-                    display_summary = summary_df.copy()
-                    for col in ['Credits', 'Debits', 'Net', 'Last_Balance']:
-                        if col in display_summary.columns:
-                            display_summary[col] = display_summary[col].apply(format_currency)
-                    st.dataframe(display_summary, use_container_width=True)
-            else:
-                st.warning("No phase data available for visualization")
+                current_account['header_indices'] = header_indices
+                current_account['header_row'] = header_row
+    
+    # Add the last account
+    if current_account:
+        current_account['end_row'] = sheet.max_row
+        accounts.append(current_account)
+    
+    return accounts
 
-            # Payment mode analysis
-            st.markdown("### Payment Mode Analysis")
+def parse_collection_transactions(sheet, accounts_info):
+    """Parse transactions from collection sheet based on identified account sections"""
+    all_transactions = []
+    
+    for account in accounts_info:
+        # Get header indices for this account
+        header_indices = account['header_indices']
+        
+        # Read transactions for this account
+        for r_idx in range(account['header_row'] + 1, account.get('end_row', sheet.max_row) + 1):
+            row = list(sheet.iter_rows(min_row=r_idx, max_row=r_idx, values_only=True))[0]
             
-            payment_modes = st.multiselect(
-                "Select Payment Modes",
-                options=filtered_df['Payment Mode'].unique(),
-                default=filtered_df['Payment Mode'].unique()
-            )
+            # Skip empty rows
+            if all(cell is None or cell == '' for cell in row):
+                continue
             
-            filtered_df = filtered_df[filtered_df['Payment Mode'].isin(payment_modes)]
-            payment_summary = create_payment_summary(filtered_df)
-            
-            col1, col2 = st.columns(2)
-            
-            with col1:
-                if not payment_summary.empty:
-                    fig_payment = px.pie(
-                        payment_summary,
-                        values='Amount',
-                        names='Mode',
-                        title="Collection by Payment Mode",
-                        color_discrete_sequence=COLORS['primary']
-                    )
-                    fig_payment.update_layout(
-                        plot_bgcolor=COLORS['background'],
-                        paper_bgcolor=COLORS['background'],
-                        font_color=COLORS['text']
-                    )
-                    st.plotly_chart(fig_payment, use_container_width=True)
-                else:
-                    st.warning("No payment data available")
-            
-            with col2:
-                if not payment_summary.empty:
-                    display_payment = payment_summary.copy()
-                    display_payment['Amount'] = display_payment['Amount'].apply(format_currency)
-                    display_payment['Percentage'] = display_payment['Percentage'].apply(format_percentage)
-                    st.dataframe(display_payment, use_container_width=True)
-
-            # Collection trends
-            st.markdown("### Collection Trends")
-            
-            try:
-                # Date range filter
-                col1, col2 = st.columns(2)
-                with col1:
-                    start_date = st.date_input(
-                        "Start Date",
-                        value=filtered_df['Value Date'].min()
-                    )
-                with col2:
-                    end_date = st.date_input(
-                        "End Date",
-                        value=filtered_df['Value Date'].max()
-                    )
-                
-                filtered_df = filter_collection_data(
-                    filtered_df,
-                    phase_name=selected_phase if selected_phase != "All Phases" else None,
-                    start_date=start_date,
-                    end_date=end_date,
-                    payment_modes=payment_modes
-                )
-                
-                if not filtered_df.empty:
-                    monthly_collection = process_collection_trends(
-                        filtered_df,
-                        start_date,
-                        end_date
-                    )
-                    
-                    fig_monthly = px.line(
-                        monthly_collection,
-                        x='Month',
-                        y='Amount',
-                        title="Monthly Collection Trend",
-                        markers=True
-                    )
-                    fig_monthly.update_layout(
-                        plot_bgcolor=COLORS['background'],
-                        paper_bgcolor=COLORS['background'],
-                        font_color=COLORS['text']
-                    )
-                    st.plotly_chart(fig_monthly, use_container_width=True)
-                    
-                    # Show detailed transactions
-                    st.markdown("### Transaction Details")
-                    
-                    # Column selection
-                    default_columns = [
-                        'Value Date', 'Description', 'Dr/Cr', 
-                        'Amount', 'Payment Mode', 'Sales Tag'
-                    ]
-                    
-                    display_columns = st.multiselect(
-                        "Select columns to display",
-                        options=filtered_df.columns,
-                        default=[col for col in default_columns if col in filtered_df.columns]
-                    )
-                    
-                    display_df = filtered_df[display_columns].copy()
-                    if 'Amount' in display_columns:
-                        display_df['Amount'] = display_df['Amount'].apply(format_currency)
-                    if 'Running Balance' in display_columns:
-                        display_df['Running Balance'] = display_df['Running Balance'].apply(format_currency)
-                    
-                    st.dataframe(
-                        display_df.sort_values('Value Date', ascending=False),
-                        use_container_width=True
-                    )
-                else:
-                    st.warning("No data available for selected filters")
-                    
-            except Exception as e:
-                st.error(f"Error processing collection trends: {str(e)}")
-
-        with tab2:
-            st.markdown("### Collection Analysis")
-            
-            # Phase filter for collection analysis
-            selected_phase = st.selectbox(
-                "Select Phase",
-                ["All Phases"] + list(current_file.phases.keys()),
-                key="collection_phase"
-            )
-            
-            if selected_phase != "All Phases":
-                collection_data = current_file.collection_df[
-                    current_file.collection_df['Phase'] == selected_phase
-                ]
-                phase_info = current_file.phases[selected_phase]
-                st.info(f"Analyzing {selected_phase} (Account: {phase_info.account_number})")
-            else:
-                collection_data = current_file.collection_df.copy()
-            
-            # Collection status
-            st.markdown("### Collection Status")
-            
-            col1, col2 = st.columns(2)
-            
-            with col1:
-                # Collection by payment mode
-                mode_summary = collection_data[
-                    collection_data['Dr/Cr'] == 'C'
-                ].groupby('Payment Mode')['Amount'].agg(['sum', 'count']).reset_index()
-                
-                mode_summary.columns = ['Mode', 'Amount', 'Count']
-                mode_summary['Percentage'] = (
-                    mode_summary['Amount'] / mode_summary['Amount'].sum() * 100
-                )
-                
-                fig_mode = px.pie(
-                    mode_summary,
-                    values='Amount',
-                    names='Mode',
-                    title="Collections by Payment Mode"
-                )
-                fig_mode.update_layout(
-                    plot_bgcolor=COLORS['background'],
-                    paper_bgcolor=COLORS['background'],
-                    font_color=COLORS['text']
-                )
-                st.plotly_chart(fig_mode, use_container_width=True)
-            
-            with col2:
-                st.dataframe(
-                    mode_summary.assign(
-                        Amount=mode_summary['Amount'].apply(format_currency),
-                        Percentage=mode_summary['Percentage'].apply(format_percentage)
-                    ),
-                    use_container_width=True
-                )
-
-            # Collection trends for selected phase
-            st.markdown("### Collection Trends")
-            
-            try:
-                monthly_collection = process_collection_trends(collection_data)
-                
-                fig_trend = px.line(
-                    monthly_collection,
-                    x='Month',
-                    y='Amount',
-                    title="Monthly Collection Trend",
-                    markers=True
-                )
-                fig_trend.update_layout(
-                    plot_bgcolor=COLORS['background'],
-                    paper_bgcolor=COLORS['background'],
-                    font_color=COLORS['text']
-                )
-                st.plotly_chart(fig_trend, use_container_width=True)
-            except Exception as e:
-                st.error(f"Error creating collection trend: {str(e)}")
-
-        with tab3:
-            st.markdown("### Sales Status")
-            
-            # Filters
-            col1, col2, col3 = st.columns(3)
-            
-            with col1:
-                tower_filter = st.multiselect(
-                    "Select Towers",
-                    options=list(current_file.sales_master_df['Tower'].unique()),
-                    default=list(current_file.sales_master_df['Tower'].unique())
-                )
-            
-            with col2:
-                unit_type_cols = [col for col in current_file.sales_master_df.columns 
-                                if 'type' in col.lower() and 'unit' in col.lower()]
-                if unit_type_cols:
-                    unit_type_col = unit_type_cols[0]
-                    unit_type_filter = st.multiselect(
-                        "Select Unit Types",
-                        options=list(current_file.sales_master_df[unit_type_col].unique()),
-                        default=list(current_file.sales_master_df[unit_type_col].unique())
-                    )
-                else:
-                    unit_type_filter = []
-            
-            with col3:
-                collection_range = st.slider(
-                    "Collection Percentage Range",
-                    min_value=0,
-                    max_value=100,
-                    value=(0, 100),
-                    step=5
-                )
-
-            # Filter sales data
-            filtered_sales = current_file.sales_master_df[
-                current_file.sales_master_df['Tower'].isin(tower_filter)
-            ]
-            
-            if unit_type_cols and unit_type_filter:
-                filtered_sales = filtered_sales[
-                    filtered_sales[unit_type_col].isin(unit_type_filter)
-                ]
-            
-            if 'Collection Percentage' in filtered_sales.columns:
-                filtered_sales = filtered_sales[
-                    (filtered_sales['Collection Percentage'] >= collection_range[0]) &
-                    (filtered_sales['Collection Percentage'] <= collection_range[1])
-                ]
-
-            # Sales Analysis visualizations
-            col1, col2 = st.columns(2)
-            
-            with col1:
-                tower_sales = filtered_sales.groupby('Tower').size().reset_index()
-                tower_sales.columns = ['Tower', 'Count']
-                
-                fig_tower = px.bar(
-                    tower_sales,
-                    x='Tower',
-                    y='Count',
-                    title="Units Sold by Tower",
-                    color='Count',
-                    color_continuous_scale=COLORS['sequential']
-                )
-                fig_tower.update_layout(
-                    plot_bgcolor=COLORS['background'],
-                    paper_bgcolor=COLORS['background'],
-                    font_color=COLORS['text']
-                )
-                st.plotly_chart(fig_tower, use_container_width=True)
-            
-            with col2:
-                if unit_type_cols:
-                    unit_type_dist = filtered_sales[unit_type_col].value_counts()
-                    
-                    fig_unit_type = px.pie(
-                        values=unit_type_dist.values,
-                        names=unit_type_dist.index,
-                        title="Unit Type Distribution",
-                        color_discrete_sequence=COLORS['primary']
-                    )
-                    fig_unit_type.update_layout(
-                        plot_bgcolor=COLORS['background'],
-                        paper_bgcolor=COLORS['background'],
-                        font_color=COLORS['text']
-                    )
-                    st.plotly_chart(fig_unit_type, use_container_width=True)
-
-            # Collection percentage distribution
-            st.markdown("### Collection Analysis")
-            
-            col1, col2 = st.columns(2)
-            
-            with col1:
-                if 'Collection Percentage' in filtered_sales.columns:
-                    collection_dist = pd.cut(
-                        filtered_sales['Collection Percentage'],
-                        bins=[0, 25, 50, 75, 90, 100],
-                        labels=['0-25%', '25-50%', '50-75%', '75-90%', '90-100%']
-                    ).value_counts()
-
-                    fig_collection = px.pie(
-                        values=collection_dist.values,
-                        names=collection_dist.index,
-                        title="Collection Percentage Distribution",
-                        color_discrete_sequence=COLORS['primary']
-                    )
-                    fig_collection.update_layout(
-                        plot_bgcolor=COLORS['background'],
-                        paper_bgcolor=COLORS['background'],
-                        font_color=COLORS['text']
-                    )
-                    st.plotly_chart(fig_collection, use_container_width=True)
-            
-            with col2:
-                # BSP Analysis
-                bsp_cols = [col for col in filtered_sales.columns if 'bsp' in col.lower()]
-                if bsp_cols and unit_type_cols:
-                    fig_bsp = px.box(
-                        filtered_sales,
-                        x='Tower',
-                        y=bsp_cols[0],
-                        color=unit_type_col,
-                        title="BSP Distribution by Tower and Unit Type"
-                    )
-                    fig_bsp.update_layout(
-                        plot_bgcolor=COLORS['background'],
-                        paper_bgcolor=COLORS['background'],
-                        font_color=COLORS['text']
-                    )
-                    st.plotly_chart(fig_bsp, use_container_width=True)
-
-        with tab4:
-            st.markdown("### Unit Details")
-            
-            # Column selection
-            all_columns = current_file.sales_master_df.columns.tolist()
-            unit_cols = [col for col in all_columns if any(text in col.lower() 
-                        for text in ['apartment', 'unit', 'tower', 'type', 'area', 'bsp', 
-                                   'consideration', 'received', 'collection'])]
-            
-            selected_columns = st.multiselect(
-                "Select columns to display",
-                options=all_columns,
-                default=unit_cols
-            )
-
-            # Format and display data
-            display_sales = filtered_sales[selected_columns].copy()
-            
-            # Format numeric columns based on patterns
-            numeric_formats = {
-                'area': lambda x: f"{x:,.0f}",
-                'bsp': lambda x: f"₹{x:,.2f}",
-                'consideration': lambda x: f"₹{x:,.2f}",
-                'amount': lambda x: f"₹{x:,.2f}",
-                'collection': lambda x: f"{x:.1f}%",
-                'balance': lambda x: f"₹{x:,.2f}"
+            transaction = {
+                'account_name': account['name'],
+                'account_number': account['number'],
+                'row': r_idx
             }
             
-            for col in selected_columns:
-                for key, formatter in numeric_formats.items():
-                    if key in col.lower():
-                        display_sales[col] = display_sales[col].apply(formatter)
-
-            st.dataframe(
-                display_sales.sort_values('Apartment No' if 'Apartment No' in selected_columns else selected_columns[0]),
-                use_container_width=True
-            )
-
-            # Export options
-            col1, col2 = st.columns(2)
+            # Extract data based on header indices
+            for field, idx in header_indices.items():
+                if idx < len(row):
+                    transaction[field] = row[idx]
             
-            with col1:
-                csv = filtered_sales[selected_columns].to_csv(index=False).encode('utf-8')
-                st.download_button(
-                    label="Download Filtered Data as CSV",
-                    data=csv,
-                    file_name=f"unit_details_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
-                    mime="text/csv"
-                )
-            
-            with col2:
-                # Summary statistics
-                summary_cols = {
-                    'area': next((col for col in selected_columns if 'area' in col.lower()), None),
-                    'consideration': next((col for col in selected_columns if 'consideration' in col.lower()), None),
-                    'received': next((col for col in selected_columns if 'received' in col.lower()), None),
-                    'bsp': next((col for col in selected_columns if 'bsp' in col.lower()), None),
-                    'collection': 'Collection Percentage' if 'Collection Percentage' in selected_columns else None
-                }
-                
-                summary_stats = pd.DataFrame({
-                    'Metric': ['Total Units', 'Total Area', 'Total Consideration', 
-                             'Total Collection', 'Average BSP', 'Average Collection %'],
-                    'Value': [
-                        len(filtered_sales),
-                        f"{filtered_sales[summary_cols['area']].sum():,.0f} sq.ft" if summary_cols['area'] else "N/A",
-                        format_currency(filtered_sales[summary_cols['consideration']].sum()) if summary_cols['consideration'] else "N/A",
-                        format_currency(filtered_sales[summary_cols['received']].sum()) if summary_cols['received'] else "N/A",
-                        format_currency(filtered_sales[summary_cols['bsp']].mean()) if summary_cols['bsp'] else "N/A",
-                        format_percentage(filtered_sales[summary_cols['collection']].mean()) if summary_cols['collection'] else "N/A"
-                    ]
-                })
-                
-                csv_summary = summary_stats.to_csv(index=False).encode('utf-8')
-                st.download_button(
-                    label="Download Summary Statistics",
-                    data=csv_summary,
-                    file_name=f"summary_stats_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
-                    mime="text/csv"
-                )
+            # Only include rows with amount and date (valid transactions)
+            if 'amount' in transaction and transaction['amount'] is not None and \
+               'date' in transaction and transaction['date'] is not None:
+                # Convert Excel date to Python datetime
+                transaction['date'] = extract_excel_date(transaction['date'])
+                all_transactions.append(transaction)
+    
+    return pd.DataFrame(all_transactions)
 
+def verify_transactions(sales_master_df, collection_df):
+    """Verify transactions against customer data"""
+    verification_results = {}
+    
+    # Process each customer
+    for _, customer in sales_master_df.iterrows():
+        unit_number = customer.get('Unit Number')
+        customer_name = customer.get('Name of Customer')
+        
+        if not unit_number:
+            continue
+        
+        # Format unit number consistently
+        if isinstance(unit_number, str):
+            unit_number = unit_number.strip().upper()
+        else:
+            unit_number = str(unit_number).strip().upper()
+        
+        # Find related transactions for this unit
+        unit_transactions = collection_df[
+            collection_df['sales_tag'].notna() & 
+            collection_df['sales_tag'].astype(str).str.upper().str.contains(unit_number.replace(' ', '').replace('-', ''), na=False)
+        ]
+        
+        # Calculate expected amount with taxes
+        expected_amount = customer.get('Amount received (Inc Taxes)', 0)
+        if pd.isna(expected_amount):
+            expected_amount = 0
+        
+        expected_base_amount = customer.get('Amount received ( Exl Taxes)', 0)
+        if pd.isna(expected_base_amount):
+            expected_base_amount = 0
+        
+        expected_tax_amount = customer.get('Taxes Received', 0)
+        if pd.isna(expected_tax_amount):
+            expected_tax_amount = 0
+        
+        # Calculate actual received from transactions
+        credit_transactions = unit_transactions[
+            unit_transactions['type'].notna() & 
+            unit_transactions['type'].astype(str).str.upper().str.contains('C', na=False)
+        ]
+        
+        debit_transactions = unit_transactions[
+            unit_transactions['type'].notna() & 
+            unit_transactions['type'].astype(str).str.upper().str.contains('D', na=False)
+        ]
+        
+        total_credits = credit_transactions['amount'].sum() if not credit_transactions.empty else 0
+        total_debits = debit_transactions['amount'].sum() if not debit_transactions.empty else 0
+        
+        # Calculate net amount (credits - debits)
+        actual_amount = total_credits - total_debits
+        
+        # Check for bounced transactions
+        bounced_transactions = []
+        for _, cr_txn in credit_transactions.iterrows():
+            cr_date = cr_txn['date']
+            cr_amount = cr_txn['amount']
+            
+            # Look for debits with same amount within 7 days (potential bounce)
+            potential_bounces = debit_transactions[
+                (debit_transactions['date'] >= cr_date) & 
+                (debit_transactions['date'] <= cr_date + pd.Timedelta(days=7)) &
+                (debit_transactions['amount'] == cr_amount)
+            ]
+            
+            if not potential_bounces.empty:
+                for _, bounce in potential_bounces.iterrows():
+                    bounced_transactions.append({
+                        'credit_date': cr_date,
+                        'credit_amount': cr_amount,
+                        'debit_date': bounce['date'],
+                        'debit_amount': bounce['amount'],
+                        'description': bounce.get('description', '')
+                    })
+        
+        # Determine verification status
+        # Tolerance of 1 rupee for floating point discrepancies
+        amount_match = abs(actual_amount - expected_amount) <= 1
+        
+        status = "verified" if amount_match and not bounced_transactions else "warning"
+        
+        if not unit_transactions.empty and not amount_match:
+            status = "error"
+        
+        verification_results[unit_number] = {
+            'unit_number': unit_number,
+            'customer_name': customer_name,
+            'expected_amount': expected_amount,
+            'expected_base_amount': expected_base_amount,
+            'expected_tax_amount': expected_tax_amount,
+            'actual_amount': actual_amount,
+            'amount_match': amount_match,
+            'total_credits': total_credits,
+            'total_debits': total_debits,
+            'transaction_count': len(unit_transactions),
+            'bounced_transactions': bounced_transactions,
+            'has_bounced': len(bounced_transactions) > 0,
+            'status': status,
+            'transactions': unit_transactions.to_dict('records') if not unit_transactions.empty else []
+        }
+    
+    return verification_results
+
+def generate_cost_sheet_data(customer_info, verification_info):
+    """Generate data for cost sheet based on customer info and verification results"""
+    unit_number = customer_info.get('Unit Number')
+    if not unit_number:
+        return None
+    
+    # Format unit number consistently
+    if isinstance(unit_number, str):
+        unit_number = unit_number.strip().upper()
     else:
-        st.markdown("""
-            <div style="text-align: center; padding: 2rem;">
-                <h2>Welcome to the Real Estate Analytics Dashboard</h2>
-                <p>Please upload Excel file(s) to begin analysis.</p>
-                <p>The file(s) should contain the following sheets:</p>
-                <ul style="list-style-type: none;">
-                    <li>Main Collection AC P1_P2_P3</li>
-                    <li>Annex - Sales Master</li>
-                    <li>Un Sold Inventory</li>
-                </ul>
-            </div>
-        """, unsafe_allow_html=True)
+        unit_number = str(unit_number).strip().upper()
+    
+    tower_no = customer_info.get('Tower No', '')
+    if tower_no and not isinstance(tower_no, str):
+        tower_no = str(tower_no)
+    
+    # Format as "CA 04-402" format
+    formatted_unit = f"{tower_no}-{unit_number.split('-')[-1] if '-' in unit_number else unit_number}"
+    formatted_unit = formatted_unit.replace(" ", "-").upper()
+    
+    # Basic customer and unit info
+    cost_sheet_data = {
+        'unit_number': unit_number,
+        'formatted_unit': formatted_unit,
+        'tower': tower_no,
+        'customer_name': customer_info.get('Name of Customer', ''),
+        'booking_date': customer_info.get('Booking date'),
+        'payment_plan': customer_info.get('Payment Plan', ''),
+        'super_area': customer_info.get('Area(sqft)', 0),
+        'carpet_area': customer_info.get('Carpet Area(sqft)', 0),
+    }
+    
+    # Cost calculations
+    cost_sheet_data.update({
+        'bsp_rate': customer_info.get('BSP/SqFt', 0),
+        'bsp_amount': customer_info.get('Basic Price ( Exl Taxes)', 0),
+        'ifms_rate': 25,  # Standard rates based on your examples
+        'ifms_amount': 25 * cost_sheet_data['super_area'],
+        'amc_rate': 3,
+        'amc_amount': 3 * cost_sheet_data['super_area'] * 12,  # Annual (12 months)
+        'gst_rate': 5,  # 5% on BSP
+        'gst_amount': 0.05 * cost_sheet_data['bsp_amount'],
+        'amc_gst_rate': 18,  # 18% on AMC
+        'amc_gst_amount': 0.18 * (3 * cost_sheet_data['super_area'] * 12),
+    })
+    
+    # Payment information
+    verification = verification_info.get(unit_number, {})
+    cost_sheet_data.update({
+        'amount_received': verification.get('expected_base_amount', 0),
+        'gst_received': verification.get('expected_tax_amount', 0),
+        'total_received': verification.get('expected_amount', 0),
+        'balance_receivable': customer_info.get('Balance receivables (Total Sale Consideration )', 0),
+    })
+    
+    # Bank transaction details
+    transactions = verification.get('transactions', [])
+    cost_sheet_data['transactions'] = sorted(transactions, key=lambda x: x.get('date', pd.NaT))
+    
+    # Calculate balance receivable
+    total_consideration = cost_sheet_data['bsp_amount'] + cost_sheet_data['ifms_amount'] + cost_sheet_data['amc_amount']
+    cost_sheet_data['total_consideration'] = total_consideration
+    cost_sheet_data['balance_receivable'] = total_consideration - cost_sheet_data['amount_received']
+    
+    # Broker information
+    cost_sheet_data.update({
+        'broker_name': customer_info.get('Broker Name', 'DIRECT'),
+        'broker_rate': 100,  # Standard rate from examples
+        'broker_amount': 100 * cost_sheet_data['super_area'],
+    })
+    
+    # Additional info
+    cost_sheet_data.update({
+        'floor_number': f"{int(formatted_unit.split('-')[-1]) // 100}th",
+        'home_loan': customer_info.get('Self-funded or loan availed', 'N/A'),
+        'co_applicant': "N/A",  # Would need to add this to the sales master parsing
+    })
+    
+    return cost_sheet_data
 
-if __name__ == "__main__":
-    main()
+def generate_cost_sheet_excel(cost_sheet_data):
+    """Generate Excel file for cost sheet"""
+    if not cost_sheet_data:
+        return None
+    
+    # Create a new workbook
+    wb = openpyxl.Workbook()
+    
+    # Remove default sheet and create our three sheets
+    wb.remove(wb.active)
+    data_entry_sheet = wb.create_sheet(f"{cost_sheet_data['formatted_unit']} - Data Entry")
+    bank_credit_sheet = wb.create_sheet("Bank Credit Details")
+    noc_sheet = wb.create_sheet("Sales NOC SWAMIH")
+    
+    # ----- Data Entry Sheet -----
+    
+    # Title row
+    data_entry_sheet['A1'] = "COST SHEET"
+    data_entry_sheet['A1'].font = Font(bold=True, size=14)
+    
+    # Header row
+    data_entry_sheet['A2'] = "Particulars"
+    data_entry_sheet['B2'] = "Details"
+    data_entry_sheet['C2'] = "Remarks"
+    
+    # Apply styling to header
+    for col in ['A2', 'B2', 'C2']:
+        data_entry_sheet[col].font = Font(bold=True)
+        data_entry_sheet[col].alignment = Alignment(horizontal='center')
+    
+    # Customer info
+    data_entry_sheet['A3'] = "DATE OF BOOKING             "
+    data_entry_sheet['B3'] = cost_sheet_data['booking_date']
+    
+    data_entry_sheet['A4'] = "APPLICANT NAME                 "
+    data_entry_sheet['B4'] = cost_sheet_data['customer_name']
+    
+    data_entry_sheet['A5'] = "CO-APPLICANT NAME          "
+    data_entry_sheet['B5'] = cost_sheet_data.get('co_applicant', 'N/A')
+    
+    data_entry_sheet['A6'] = "PAYMENT PLAN"
+    data_entry_sheet['B6'] = cost_sheet_data['payment_plan']
+    
+    data_entry_sheet['A7'] = "TOWER:"
+    data_entry_sheet['B7'] = cost_sheet_data['tower']
+    
+    data_entry_sheet['A8'] = "UNIT NO:"
+    data_entry_sheet['B8'] = cost_sheet_data['unit_number'].split('-')[-1] if '-' in cost_sheet_data['unit_number'] else cost_sheet_data['unit_number']
+    
+    data_entry_sheet['A9'] = "FLOOR NUMBER"
+    data_entry_sheet['B9'] = cost_sheet_data['floor_number']
+    
+    data_entry_sheet['A10'] = "SUPER AREA(SQ. FT.)"
+    data_entry_sheet['B10'] = cost_sheet_data['super_area']
+    
+    data_entry_sheet['A11'] = "CARPET AREA(SQ. FT.)"
+    data_entry_sheet['B11'] = cost_sheet_data['carpet_area']
+    
+    # Cost breakdown header
+    data_entry_sheet['A13'] = "Particulars"
+    data_entry_sheet['B13'] = "Rate"
+    data_entry_sheet['C13'] = "Amount"
+    data_entry_sheet['D13'] = "Psft"
+    
+    for col in ['A13', 'B13', 'C13', 'D13']:
+        data_entry_sheet[col].font = Font(bold=True)
+        data_entry_sheet[col].alignment = Alignment(horizontal='center')
+    
+    # Cost breakdown data
+    data_entry_sheet['A15'] = "BASIC SALE PRICE            "
+    data_entry_sheet['B15'] = cost_sheet_data['bsp_rate']
+    data_entry_sheet['C15'] = cost_sheet_data['bsp_amount']
+    data_entry_sheet['D15'] = data_entry_sheet['C15'].value / data_entry_sheet['B10'].value
+    
+    data_entry_sheet['A16'] = "Less: Discount (if any)"
+    data_entry_sheet['B16'] = "-"
+    data_entry_sheet['C16'] = 0
+    
+    data_entry_sheet['A17'] = "NET Price"
+    data_entry_sheet['C17'] = "=C15-C16"
+    
+    data_entry_sheet['A18'] = "ADD:-"
+    
+    data_entry_sheet['A19'] = "IFMS"
+    data_entry_sheet['B19'] = cost_sheet_data['ifms_rate']
+    data_entry_sheet['C19'] = "=B19*B10"
+    data_entry_sheet['D19'] = "=C19/B10"
+    
+    data_entry_sheet['A20'] = "1 Year Annual Maintenance Charge"
+    data_entry_sheet['B20'] = cost_sheet_data['amc_rate']
+    data_entry_sheet['C20'] = "=(B20*B10)*12"
+    data_entry_sheet['D20'] = "=C20/B10"
+    
+    data_entry_sheet['A21'] = "Lease Rent"
+    data_entry_sheet['B21'] = 0
+    data_entry_sheet['C21'] = "INCLUSIVE IN BSP"
+    
+    data_entry_sheet['A22'] = "EEC"
+    data_entry_sheet['B22'] = 0
+    data_entry_sheet['C22'] = "INCLUSIVE IN BSP"
+    
+    data_entry_sheet['A23'] = "FFC"
+    data_entry_sheet['B23'] = 0
+    data_entry_sheet['C23'] = "INCLUSIVE IN BSP"
+    
+    data_entry_sheet['A24'] = "IDC"
+    data_entry_sheet['B24'] = 0
+    data_entry_sheet['C24'] = "INCLUSIVE IN BSP"
+    
+    data_entry_sheet['A26'] = "Covered Car Parking       "
+    data_entry_sheet['B26'] = 475000
+    data_entry_sheet['C26'] = "INCLUSIVE IN BSP"
+    
+    data_entry_sheet['A27'] = "Additional Car Parking"
+    data_entry_sheet['B27'] = 475000
+    data_entry_sheet['C27'] = "INCLUSIVE IN BSP"
+    
+    data_entry_sheet['A28'] = "Club Membership           "
+    data_entry_sheet['B28'] = 100000
+    data_entry_sheet['C28'] = "INCLUSIVE IN BSP"
+    
+    data_entry_sheet['A29'] = "Power Backup( 1.K.V.A)                  "
+    data_entry_sheet['B29'] = 20000
+    data_entry_sheet['C29'] = "INCLUSIVE IN BSP"
+    
+    data_entry_sheet['A30'] = "Add.Power Backup( 3.K.V.A)                  "
+    data_entry_sheet['B30'] = 60000
+    data_entry_sheet['C30'] = "INCLUSIVE IN BSP"
+    
+    data_entry_sheet['A31'] = "ADD:               "
+    
+    data_entry_sheet['A32'] = "PLC'S:-"
+    
+    data_entry_sheet['A33'] = "PARK"
+    data_entry_sheet['B33'] = 150
+    data_entry_sheet['C33'] = "INCLUSIVE IN BSP"
+    
+    data_entry_sheet['A34'] = "CLUB"
+    data_entry_sheet['B34'] = 100
+    data_entry_sheet['C34'] = "NA"
+    
+    data_entry_sheet['A35'] = "CORNER"
+    data_entry_sheet['B35'] = 100
+    data_entry_sheet['C35'] = "NA"
+    
+    data_entry_sheet['A36'] = "ROAD"
+    data_entry_sheet['B36'] = 100
+    data_entry_sheet['C36'] = "NA"
+    
+    # Total considerations
+    data_entry_sheet['A38'] = "Total Sale Consideration "
+    data_entry_sheet['C38'] = "=SUM(C17:C37)"
+    
+    data_entry_sheet['A39'] = "GST AMOUNT "
+    data_entry_sheet['C39'] = "=(C15)*5%"
+    data_entry_sheet['D39'] = "5% GST"
+    
+    data_entry_sheet['A40'] = "AMC GST"
+    data_entry_sheet['C40'] = "=C20*18%"
+    data_entry_sheet['D40'] = "18% GST"
+    
+    data_entry_sheet['A41'] = "Total GST"
+    data_entry_sheet['C41'] = "=C40+C39"
+    
+    data_entry_sheet['A42'] = "GRAND TOTAL"
+    data_entry_sheet['C42'] = "=C41+C38"
+    
+    # Receipt details
+    data_entry_sheet['A44'] = "Receipt details"
+    
+    data_entry_sheet['A45'] = "Amount Received"
+    data_entry_sheet['C45'] = cost_sheet_data['amount_received']
+    
+    data_entry_sheet['A46'] = "BALANCE RECEIVABLE"
+    data_entry_sheet['C46'] = "=C38-C45"
+    
+    data_entry_sheet['A47'] = "GST received"
+    data_entry_sheet['C47'] = cost_sheet_data['gst_received']
+    
+    data_entry_sheet['A48'] = "BALANCE GST RECEIVABLE"
+    data_entry_sheet['C48'] = "=C41-C47"
+    
+    # Broker info
+    data_entry_sheet['A50'] = "Brokerage"
+    data_entry_sheet['B50'] = cost_sheet_data['broker_rate']
+    data_entry_sheet['C50'] = "=B50*B10"
+    
+    data_entry_sheet['A51'] = "Broker Name "
+    data_entry_sheet['C51'] = cost_sheet_data['broker_name']
+    
+    data_entry_sheet['A52'] = "Amount to be collected Excluding Brokerage"
+    data_entry_sheet['C52'] = "=C42-C50"
+    
+    # Additional information
+    data_entry_sheet['A54'] = "Home Loan Taken from"
+    data_entry_sheet['C54'] = cost_sheet_data.get('home_loan', 'N/A')
+    
+    data_entry_sheet['A55'] = "Contact Number of Purchaser"
+    data_entry_sheet['C55'] = ""  # Would need to add this to the sales master parsing
+    
+    data_entry_sheet['A56'] = "Address of Purchaser"
+    data_entry_sheet['C56'] = ""  # Would need to add this to the sales master parsing
+    
+    data_entry_sheet['A58'] = "Sale Status as per DTD"
+    data_entry_sheet['C58'] = "Unsold"
+    
+    data_entry_sheet['A59'] = "Sale Status as per Actual "
+    data_entry_sheet['C59'] = "Sold"
+
+    # Adjust column widths
+    for col, width in [('A', 40), ('B', 20), ('C', 25), ('D', 15)]:
+        data_entry_sheet.column_dimensions[col].width = width
+    
+    # ----- Bank Credit Details Sheet -----
+    bank_credit_sheet['A1'] = "Date"
+    bank_credit_sheet['B1'] = "Amount received"
+    bank_credit_sheet['C1'] = "Bank A/c Name"
+    bank_credit_sheet['D1'] = "Bank A/c No"
+    bank_credit_sheet['E1'] = "Bank statement verified"
+    
+    # Apply styling to header
+    for col in ['A1', 'B1', 'C1', 'D1', 'E1']:
+        bank_credit_sheet[col].font = Font(bold=True)
+        bank_credit_sheet[col].alignment = Alignment(horizontal='center')
+    
+    # Add transaction data
+    transactions = cost_sheet_data.get('transactions', [])
+    credit_transactions = [t for t in transactions if t.get('type') == 'C']
+    
+    for i, txn in enumerate(credit_transactions, start=2):
+        bank_credit_sheet[f'A{i}'] = txn.get('date')
+        bank_credit_sheet[f'B{i}'] = txn.get('amount')
+        bank_credit_sheet[f'C{i}'] = txn.get('account_name')
+        bank_credit_sheet[f'D{i}'] = txn.get('account_number')
+        bank_credit_sheet[f'E{i}'] = "Yes"
+    
+    # Add total row
+    total_row = len(credit_transactions) + 2
+    bank_credit_sheet[f'A{total_row}'] = "Total Sum received"
+    bank_credit_sheet[f'B{total_row}'] = f"=SUM(B2:B{total_row-1})"
+    
+    # Adjust column widths
+    for col, width in [('A', 15), ('B', 15), ('C', 35), ('D', 20), ('E', 20)]:
+        bank_credit_sheet.column_dimensions[col].width = width
+    
+    # ----- Sales NOC SWAMIH Sheet -----
+    noc_sheet['B1'] = "Particulars"
+    noc_sheet['C1'] = "Details"
+    
+    noc_sheet['B2'] = "Flat/Unit No."
+    noc_sheet['C2'] = f"='{cost_sheet_data['formatted_unit']} - Data Entry'!B8"
+    
+    noc_sheet['B3'] = "Floor No."
+    noc_sheet['C3'] = f"='{cost_sheet_data['formatted_unit']} - Data Entry'!B9"
+    
+    noc_sheet['B4'] = "Building Name"
+    noc_sheet['C4'] = f"='{cost_sheet_data['formatted_unit']} - Data Entry'!B7"
+    
+    noc_sheet['B5'] = "Carpet Area of the Flat / Unit (Sq.Ft.)"
+    noc_sheet['C5'] = f"='{cost_sheet_data['formatted_unit']} - Data Entry'!B11"
+    
+    noc_sheet['B6'] = "Name of the Applicant (Purchaser)"
+    noc_sheet['C6'] = f"='{cost_sheet_data['formatted_unit']} - Data Entry'!B4"
+    
+    noc_sheet['B7'] = "Name of the Co-Applicant (Co- Purchaser)"
+    noc_sheet['C7'] = f"='{cost_sheet_data['formatted_unit']} - Data Entry'!B5"
+    
+    noc_sheet['B8'] = "Total Sale Consideration (including parking charges) (Excl. GST)"
+    noc_sheet['C8'] = f"='{cost_sheet_data['formatted_unit']} - Data Entry'!C38"
+    
+    noc_sheet['B9'] = "Total GST"
+    noc_sheet['C9'] = f"='{cost_sheet_data['formatted_unit']} - Data Entry'!C41"
+    
+    noc_sheet['B10'] = "Sale Consideration Amount Received as on date (Excl. GST)"
+    noc_sheet['C10'] = f"='{cost_sheet_data['formatted_unit']} - Data Entry'!C45"
+    
+    noc_sheet['B11'] = "GST Amount received as on date"
+    noc_sheet['C11'] = f"='{cost_sheet_data['formatted_unit']} - Data Entry'!C47"
+    
+    noc_sheet['B12'] = "Balance Amount yet to be received (excluding taxes)"
+    noc_sheet['C12'] = "=C8-C10"
+    
+    noc_sheet['B13'] = "Booking Date"
+    noc_sheet['C13'] = f"='{cost_sheet_data['formatted_unit']} - Data Entry'!B3"
+    
+    noc_sheet['B14'] = "Home loan taken from"
+    noc_sheet['C14'] = f"='{cost_sheet_data['formatted_unit']} - Data Entry'!C54"
+    
+    noc_sheet['B15'] = "Contact number of Purchaser"
+    noc_sheet['C15'] = f"='{cost_sheet_data['formatted_unit']} - Data Entry'!C55"
+    
+    noc_sheet['B16'] = "Address of Homebuyer of Purchaser"
+    noc_sheet['C16'] = f"='{cost_sheet_data['formatted_unit']} - Data Entry'!C56"
+    
+    # Adjust column widths
+    for col, width in [('B', 60), ('C', 30)]:
+        noc_sheet.column_dimensions[col].width = width
+    
+    # Save to BytesIO object
+    output = io.BytesIO()
+    wb.save(output)
+    output.seek(0)
+    
+    return output
+
+def generate_noc_document(customer_info, template_file):
+    """Generate NOC document for a customer"""
+    if not template_file or not customer_info:
+        return None
+    
+    try:
+        # Load the template
+        doc = DocxTemplate(template_file)
+        
+        # Format unit number consistently
+        unit_number = customer_info.get('Unit Number')
+        if isinstance(unit_number, str):
+            unit_number = unit_number.strip().upper()
+        else:
+            unit_number = str(unit_number).strip().upper()
+        
+        tower_no = customer_info.get('Tower No', '')
+        if tower_no and not isinstance(tower_no, str):
+            tower_no = str(tower_no)
+        
+        # Prepare context data for template
+        context = {
+            'unit_no': unit_number,
+            'floor_no': f"{int(unit_number.split('-')[-1]) // 100}th" if '-' in unit_number else "Ground",
+            'building_name': tower_no,
+            'booking_date': customer_info.get('Booking date').strftime('%d-%m-%Y'),
+            'saleable_area': customer_info.get('Area(sqft)'),
+            'carpet_area': customer_info.get('Carpet Area(sqft)'),
+            'applicant_name': customer_info.get('Name of Customer'),
+            'co_applicant_name': customer_info.get('Co-Applicant Name', 'N/A'),
+            'today_date': datetime.now().strftime('%d-%m-%Y')
+        }
+        
+        # Render the template with the data
+        doc.render(context)
+        
+        # Save to a byte stream
+        output = io.BytesIO()
+        doc.save(output)
+        output.seek(0)
+        
+        return output
+    
+    except Exception as e:
+        st.error(f"Error generating NOC document: {str(e)}")
+        return None
+
+def create_download_link(file_obj, file_name):
+    """Create a download link for a file object"""
+    b64 = base64.b64encode(file_obj.read()).decode()
+    href = f'<a href="data:application/octet-stream;base64,{b64}" download="{file_name}">Download {file_name}</a>'
+    return href
+
+# Sidebar for uploading files
+with st.sidebar:
+    st.markdown('<div class="section-header">File Upload</div>', unsafe_allow_html=True)
+    
+    uploaded_sales_mis = st.file_uploader("Upload Sales MIS Template Excel", type=["xlsx", "xls"])
+    
+    st.markdown('<div class="section-header">Optional</div>', unsafe_allow_html=True)
+    uploaded_noc_template = st.file_uploader("Upload NOC Document Template (Optional)", type=["docx"])
+    
+    if uploaded_noc_template:
+        st.session_state.noc_template = uploaded_noc_template
+
+# Main area
+st.markdown('<div class="section-header">Data Processing & Verification</div>', unsafe_allow_html=True)
+
+if uploaded_sales_mis:
+    # Process the uploaded file
+    with st.spinner('Processing Sales MIS Template...'):
+        try:
+            # Load workbook
+            workbook = openpyxl.load_workbook(uploaded_sales_mis, data_only=True)
+            
+            # Identify the relevant sheets
+            sales_master_sheet_name = identify_sales_master_sheet(workbook)
+            collection_sheet_name = identify_collection_sheet(workbook)
+            
+            if not sales_master_sheet_name:
+                st.error("Could not identify Annex - Sales Master sheet in the uploaded file.")
+            elif not collection_sheet_name:
+                st.error("Could not identify Main Collection sheet in the uploaded file.")
+            else:
+                st.success(f"Successfully identified sheets: '{sales_master_sheet_name}' and '{collection_sheet_name}'")
+                
+                # Parse Sales Master sheet
+                sales_master_df = parse_sales_master(workbook[sales_master_sheet_name])
+                st.session_state.sales_master_df = sales_master_df
+                
+                # Identify account sections in collection sheet
+                accounts_info = identify_account_sections(workbook[collection_sheet_name])
+                st.session_state.accounts_info = accounts_info
+                
+                # Parse collection transactions
+                collection_df = parse_collection_transactions(workbook[collection_sheet_name], accounts_info)
+                st.session_state.collection_df = collection_df
+                
+                # Verify transactions against customer data
+                verification_results = verify_transactions(sales_master_df, collection_df)
+                st.session_state.verification_results = verification_results
+                
+                # Show summary
+                st.markdown('<div class="section-header">Verification Summary</div>', unsafe_allow_html=True)
+                
+                verified_count = sum(1 for v in verification_results.values() if v['status'] == 'verified')
+                warning_count = sum(1 for v in verification_results.values() if v['status'] == 'warning')
+                error_count = sum(1 for v in verification_results.values() if v['status'] == 'error')
+                
+                col1, col2, col3 = st.columns(3)
+                with col1:
+                    st.metric("Verified Units", verified_count, f"{verified_count/len(verification_results)*100:.1f}%")
+                with col2:
+                    st.metric("Units with Warnings", warning_count, f"{warning_count/len(verification_results)*100:.1f}%")
+                with col3:
+                    st.metric("Units with Errors", error_count, f"{error_count/len(verification_results)*100:.1f}%")
+                
+                # Show accounts found
+                st.markdown('<div class="section-header">Bank Accounts Identified</div>', unsafe_allow_html=True)
+                
+                accounts_df = pd.DataFrame([
+                    {
+                        'Account Name': account['name'],
+                        'Account Number': account['number'],
+                        'Transaction Count': sum(1 for _, txn in collection_df.iterrows() 
+                                            if txn.get('account_number') == account['number'])
+                    }
+                    for account in accounts_info
+                ])
+                
+                st.dataframe(accounts_df, use_container_width=True)
+        
+        except Exception as e:
+            st.error(f"Error processing file: {str(e)}")
+    
+    # Show customer selection and verification details if data is processed
+    if st.session_state.sales_master_df is not None and st.session_state.verification_results:
+        st.markdown('<div class="section-header">Customer Selection</div>', unsafe_allow_html=True)
+        
+        # Create a DataFrame for display
+        customers_df = pd.DataFrame([
+            {
+                'Select': False,
+                'Unit Number': v['unit_number'],
+                'Customer Name': v['customer_name'],
+                'Expected Amount': v['expected_amount'],
+                'Actual Amount': v['actual_amount'],
+                'Difference': v['expected_amount'] - v['actual_amount'],
+                'Transaction Count': v['transaction_count'],
+                'Bounced Transactions': len(v['bounced_transactions']),
+                'Status': v['status']
+            }
+            for k, v in st.session_state.verification_results.items()
+        ])
+        
+        # Sort by unit number
+        customers_df = customers_df.sort_values('Unit Number')
+        
+        # Use st.data_editor to make it selectable
+        edited_df = st.data_editor(
+            customers_df,
+            column_config={
+                "Select": st.column_config.CheckboxColumn(
+                    "Select",
+                    help="Select customer for cost sheet generation",
+                    default=False,
+                ),
+                "Status": st.column_config.SelectboxColumn(
+                    "Status",
+                    help="Verification status",
+                    options=["verified", "warning", "error"],
+                    required=True,
+                )
+            },
+            disabled=["Unit Number", "Customer Name", "Expected Amount", "Actual Amount", 
+                     "Difference", "Transaction Count", "Bounced Transactions", "Status"],
+            use_container_width=True,
+            hide_index=True
+        )
+        
+        # Store selected customers
+        selected_customers = edited_df[edited_df['Select']]['Unit Number'].tolist()
+        st.session_state.selected_customers = selected_customers
+        
+        # Show detailed verification for selected customers
+        if selected_customers:
+            st.markdown('<div class="section-header">Verification Details</div>', unsafe_allow_html=True)
+            
+            # Create tabs for each selected customer
+            tabs = st.tabs([f"{unit_no}" for unit_no in selected_customers])
+            
+            for i, tab in enumerate(tabs):
+                unit_no = selected_customers[i]
+                verification = st.session_state.verification_results.get(unit_no, {})
+                
+                with tab:
+                    col1, col2 = st.columns(2)
+                    
+                    with col1:
+                        st.subheader("Customer Information")
+                        st.write(f"**Customer:** {verification.get('customer_name', 'N/A')}")
+                        st.write(f"**Unit:** {unit_no}")
+                        
+                        customer_row = st.session_state.sales_master_df[
+                            st.session_state.sales_master_df['Unit Number'] == unit_no
+                        ]
+                        
+                        if not customer_row.empty:
+                            st.write(f"**Tower:** {customer_row.iloc[0].get('Tower No', 'N/A')}")
+                            st.write(f"**Booking Date:** {customer_row.iloc[0].get('Booking date', 'N/A')}")
+                            st.write(f"**Payment Plan:** {customer_row.iloc[0].get('Payment Plan', 'N/A')}")
+                    
+                    with col2:
+                        st.subheader("Payment Verification")
+                        st.write(f"**Expected Amount:** ₹{verification.get('expected_amount', 0):,.2f}")
+                        st.write(f"**Actual Amount:** ₹{verification.get('actual_amount', 0):,.2f}")
+                        
+                        difference = verification.get('expected_amount', 0) - verification.get('actual_amount', 0)
+                        st.write(f"**Difference:** ₹{difference:,.2f}")
+                        
+                        status = verification.get('status', 'unknown')
+                        if status == 'verified':
+                            st.success("✅ Payments Verified")
+                        elif status == 'warning':
+                            st.warning("⚠️ Verification Warning")
+                        else:
+                            st.error("❌ Verification Failed")
+                    
+                    # Show transactions
+                    st.subheader("Transactions")
+                    transactions = verification.get('transactions', [])
+                    
+                    if transactions:
+                        transactions_df = pd.DataFrame(transactions)
+                        
+                        # Format date column
+                        if 'date' in transactions_df.columns:
+                            transactions_df['date'] = pd.to_datetime(transactions_df['date']).dt.strftime('%Y-%m-%d')
+                        
+                        # Select relevant columns
+                        display_cols = ['date', 'description', 'type', 'amount', 'account_name', 'sales_tag']
+                        display_cols = [col for col in display_cols if col in transactions_df.columns]
+                        
+                        st.dataframe(transactions_df[display_cols], use_container_width=True)
+                    else:
+                        st.info("No transactions found for this unit.")
+                    
+                    # Show bounced transactions if any
+                    bounced = verification.get('bounced_transactions', [])
+                    if bounced:
+                        st.subheader("Potential Bounced Transactions")
+                        bounced_df = pd.DataFrame(bounced)
+                        st.dataframe(bounced_df, use_container_width=True)
+                    
+                    # Generate preview data for this customer
+                    customer_info = st.session_state.sales_master_df[
+                        st.session_state.sales_master_df['Unit Number'] == unit_no
+                    ].iloc[0]
+                    
+                    cost_sheet_data = generate_cost_sheet_data(customer_info, verification)
+                    st.session_state.preview_data[unit_no] = cost_sheet_data
+                    
+                    # Preview button
+                    if st.button(f"Preview Cost Sheet for {unit_no}", key=f"preview_{unit_no}"):
+                        preview_data = st.session_state.preview_data.get(unit_no)
+                        
+                        if preview_data:
+                            st.subheader("Cost Sheet Preview")
+                            
+                            preview_tabs = st.tabs(["Data Entry", "Bank Credit Details", "Sales NOC SWAMIH"])
+                            
+                            with preview_tabs[0]:
+                                st.write("**COST SHEET**")
+                                
+                                col1, col2 = st.columns(2)
+                                with col1:
+                                    st.write("**Customer Information**")
+                                    st.write(f"**APPLICANT NAME:** {preview_data.get('customer_name')}")
+                                    st.write(f"**CO-APPLICANT NAME:** {preview_data.get('co_applicant', 'N/A')}")
+                                    st.write(f"**BOOKING DATE:** {preview_data.get('booking_date')}")
+                                    st.write(f"**PAYMENT PLAN:** {preview_data.get('payment_plan')}")
+                                
+                                with col2:
+                                    st.write("**Unit Information**")
+                                    st.write(f"**TOWER:** {preview_data.get('tower')}")
+                                    st.write(f"**UNIT NO:** {preview_data.get('unit_number')}")
+                                    st.write(f"**FLOOR NUMBER:** {preview_data.get('floor_number')}")
+                                    st.write(f"**SUPER AREA:** {preview_data.get('super_area')} sq.ft.")
+                                    st.write(f"**CARPET AREA:** {preview_data.get('carpet_area')} sq.ft.")
+                                
+                                st.write("**Cost Breakdown**")
+                                cost_df = pd.DataFrame([
+                                    {"Particulars": "BASIC SALE PRICE", "Rate": preview_data.get('bsp_rate'), 
+                                     "Amount": preview_data.get('bsp_amount')},
+                                    {"Particulars": "IFMS", "Rate": preview_data.get('ifms_rate'), 
+                                     "Amount": preview_data.get('ifms_amount')},
+                                    {"Particulars": "1 Year Annual Maintenance Charge", "Rate": preview_data.get('amc_rate'), 
+                                     "Amount": preview_data.get('amc_amount')},
+                                    {"Particulars": "Total Sale Consideration", "Rate": "", 
+                                     "Amount": preview_data.get('total_consideration')},
+                                    {"Particulars": "GST AMOUNT (5%)", "Rate": "", 
+                                     "Amount": preview_data.get('gst_amount')},
+                                    {"Particulars": "AMC GST (18%)", "Rate": "", 
+                                     "Amount": preview_data.get('amc_gst_amount')},
+                                    {"Particulars": "GRAND TOTAL", "Rate": "", 
+                                     "Amount": preview_data.get('total_consideration') + 
+                                             preview_data.get('gst_amount') + 
+                                             preview_data.get('amc_gst_amount')}
+                                ])
+                                st.dataframe(cost_df, use_container_width=True)
+                                
+                                st.write("**Receipt Details**")
+                                receipt_df = pd.DataFrame([
+                                    {"Detail": "Amount Received", "Value": preview_data.get('amount_received')},
+                                    {"Detail": "BALANCE RECEIVABLE", "Value": preview_data.get('balance_receivable')},
+                                    {"Detail": "GST received", "Value": preview_data.get('gst_received')},
+                                    {"Detail": "BALANCE GST RECEIVABLE", "Value": preview_data.get('gst_amount') - 
+                                                                                preview_data.get('gst_received')}
+                                ])
+                                st.dataframe(receipt_df, use_container_width=True)
+                            
+                            with preview_tabs[1]:
+                                st.write("**Bank Credit Details**")
+                                
+                                transactions = preview_data.get('transactions', [])
+                                credit_transactions = [t for t in transactions if t.get('type') == 'C']
+                                
+                                if credit_transactions:
+                                    bank_df = pd.DataFrame([
+                                        {
+                                            "Date": txn.get('date'),
+                                            "Amount received": txn.get('amount'),
+                                            "Bank A/c Name": txn.get('account_name'),
+                                            "Bank A/c No": txn.get('account_number'),
+                                            "Bank statement verified": "Yes"
+                                        }
+                                        for txn in credit_transactions
+                                    ])
+                                    
+                                    # Add total row
+                                    bank_df.loc[len(bank_df)] = {
+                                        "Date": "Total Sum received",
+                                        "Amount received": bank_df["Amount received"].sum(),
+                                        "Bank A/c Name": "",
+                                        "Bank A/c No": "",
+                                        "Bank statement verified": ""
+                                    }
+                                    
+                                    st.dataframe(bank_df, use_container_width=True)
+                                else:
+                                    st.info("No credit transactions found for this unit.")
+                            
+                            with preview_tabs[2]:
+                                st.write("**Sales NOC SWAMIH**")
+                                
+                                noc_df = pd.DataFrame([
+                                    {"Particulars": "Flat/Unit No.", "Details": preview_data.get('unit_number')},
+                                    {"Particulars": "Floor No.", "Details": preview_data.get('floor_number')},
+                                    {"Particulars": "Building Name", "Details": preview_data.get('tower')},
+                                    {"Particulars": "Carpet Area of the Flat / Unit (Sq.Ft.)", 
+                                     "Details": preview_data.get('carpet_area')},
+                                    {"Particulars": "Name of the Applicant (Purchaser)", 
+                                     "Details": preview_data.get('customer_name')},
+                                    {"Particulars": "Name of the Co-Applicant (Co- Purchaser)", 
+                                     "Details": preview_data.get('co_applicant', 'N/A')},
+                                    {"Particulars": "Total Sale Consideration (including parking charges) (Excl. GST)", 
+                                     "Details": preview_data.get('total_consideration')},
+                                    {"Particulars": "Total GST", 
+                                     "Details": preview_data.get('gst_amount') + preview_data.get('amc_gst_amount')},
+                                    {"Particulars": "Sale Consideration Amount Received as on date (Excl. GST)", 
+                                     "Details": preview_data.get('amount_received')},
+                                    {"Particulars": "GST Amount received as on date", 
+                                     "Details": preview_data.get('gst_received')},
+                                    {"Particulars": "Balance Amount yet to be received (excluding taxes)", 
+                                     "Details": preview_data.get('balance_receivable')},
+                                    {"Particulars": "Booking Date", "Details": preview_data.get('booking_date')},
+                                    {"Particulars": "Home loan taken from", "Details": preview_data.get('home_loan')},
+                                ])
+                                
+                                st.dataframe(noc_df, use_container_width=True)
+            
+            # Generate cost sheets section
+            st.markdown('<div class="section-header">Generate Cost Sheets</div>', unsafe_allow_html=True)
+            
+            if st.button("Generate Cost Sheets for Selected Customers", key="generate_cost_sheets"):
+                if not selected_customers:
+                    st.warning("Please select at least one customer.")
+                else:
+                    with st.spinner(f"Generating cost sheets for {len(selected_customers)} customers..."):
+                        # Create a temporary directory to store the files
+                        with tempfile.TemporaryDirectory() as temp_dir:
+                            cost_sheet_files = []
+                            noc_files = []
+                            
+                            # Generate cost sheets for each selected customer
+                            for unit_no in selected_customers:
+                                # Get customer info and verification data
+                                customer_row = st.session_state.sales_master_df[
+                                    st.session_state.sales_master_df['Unit Number'] == unit_no
+                                ]
+                                
+                                if customer_row.empty:
+                                    continue
+                                
+                                customer_info = customer_row.iloc[0]
+                                verification = st.session_state.verification_results.get(unit_no, {})
+                                cost_sheet_data = generate_cost_sheet_data(customer_info, verification)
+                                
+                                # Generate Excel file
+                                excel_file = generate_cost_sheet_excel(cost_sheet_data)
+                                
+                                if excel_file:
+                                    # Save Excel file to temp directory
+                                    excel_path = os.path.join(temp_dir, f"COST SHEET-{unit_no}.xlsx")
+                                    with open(excel_path, 'wb') as f:
+                                        f.write(excel_file.getvalue())
+                                    
+                                    cost_sheet_files.append((excel_path, f"COST SHEET-{unit_no}.xlsx"))
+                                
+                                # Generate NOC document if template is available
+                                if st.session_state.noc_template:
+                                    noc_doc = generate_noc_document(customer_info, st.session_state.noc_template)
+                                    
+                                    if noc_doc:
+                                        # Save NOC file to temp directory
+                                        noc_path = os.path.join(temp_dir, f"NOC-{unit_no}.docx")
+                                        with open(noc_path, 'wb') as f:
+                                            f.write(noc_doc.getvalue())
+                                        
+                                        noc_files.append((noc_path, f"NOC-{unit_no}.docx"))
+                            
+                            # Create a zip file if multiple files
+                            if len(cost_sheet_files) > 1:
+                                zip_path = os.path.join(temp_dir, "Cost_Sheets.zip")
+                                with zipfile.ZipFile(zip_path, 'w') as zipf:
+                                    for file_path, file_name in cost_sheet_files:
+                                        zipf.write(file_path, file_name)
+                                    
+                                    if noc_files:
+                                        for file_path, file_name in noc_files:
+                                            zipf.write(file_path, file_name)
+                                
+                                # Create download link for zip
+                                with open(zip_path, 'rb') as f:
+                                    zip_data = f.read()
+                                
+                                st.success(f"Successfully generated {len(cost_sheet_files)} cost sheets and {len(noc_files)} NOC documents.")
+                                st.download_button(
+                                    label="Download All Files (ZIP)",
+                                    data=zip_data,
+                                    file_name="Cost_Sheets.zip",
+                                    mime="application/zip"
+                                )
+                            else:
+                                # Create individual download links
+                                st.success("Cost sheet generated successfully!")
+                                
+                                for file_path, file_name in cost_sheet_files:
+                                    with open(file_path, 'rb') as f:
+                                        file_data = f.read()
+                                    
+                                    st.download_button(
+                                        label=f"Download {file_name}",
+                                        data=file_data,
+                                        file_name=file_name,
+                                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                                        key=f"download_{file_name}"
+                                    )
+                                
+                                for file_path, file_name in noc_files:
+                                    with open(file_path, 'rb') as f:
+                                        file_data = f.read()
+                                    
+                                    st.download_button(
+                                        label=f"Download {file_name}",
+                                        data=file_data,
+                                        file_name=file_name,
+                                        mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                                        key=f"download_{file_name}"
+                                    )
+
+else:
+    st.info("Please upload the Sales MIS Template Excel file to start.")
+
+# Footer
+st.markdown('<div class="footer">Real Estate Cost Sheet Generator © 2025</div>', unsafe_allow_html=True)
