@@ -24,7 +24,7 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# Define CSS styles
+# Define CSS styles with improved contrast for both light and dark modes
 st.markdown("""
 <style>
     .main-header {
@@ -41,7 +41,7 @@ st.markdown("""
     .section-header {
         font-size: 24px;
         font-weight: bold;
-        color: #2563EB;
+        color: white;
         margin-top: 30px;
         margin-bottom: 15px;
         padding-bottom: 5px;
@@ -50,42 +50,43 @@ st.markdown("""
     .subsection-header {
         font-size: 20px;
         font-weight: bold;
-        color: #3B82F6;
+        color: white;
         margin-top: 20px;
         margin-bottom: 10px;
     }
     .info-text {
         font-size: 16px;
-        color: #1F2937;
+        color: white;
         margin-bottom: 20px;
     }
     .success-box {
         padding: 15px;
         border-radius: 5px;
-        background-color: #ECFDF5;
+        background-color: #044A1026;
         border-left: 5px solid #10B981;
         margin-bottom: 20px;
     }
     .warning-box {
         padding: 15px;
         border-radius: 5px;
-        background-color: #FFFBEB;
+        background-color: #FFFBEB1A;
         border-left: 5px solid #F59E0B;
         margin-bottom: 20px;
     }
     .error-box {
         padding: 15px;
         border-radius: 5px;
-        background-color: #FEF2F2;
+        background-color: #FEF2F21A;
         border-left: 5px solid #EF4444;
         margin-bottom: 20px;
     }
     .info-box {
         padding: 15px;
         border-radius: 5px;
-        background-color: #EFF6FF;
+        background-color: #1E40AF19;
         border-left: 5px solid #3B82F6;
         margin-bottom: 20px;
+        color: white;
     }
     .status-badge {
         display: inline-block;
@@ -110,37 +111,38 @@ st.markdown("""
     .metric-card {
         padding: 15px;
         border-radius: 8px;
-        background-color: #F9FAFB;
-        border: 1px solid #E5E7EB;
+        background-color: #1F2A3F;
+        border: 1px solid #334166;
         box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
         text-align: center;
+        margin-bottom: 10px;
     }
     .metric-value {
         font-size: 28px;
         font-weight: bold;
-        color: #1E40AF;
+        color: white;
     }
     .metric-label {
         font-size: 14px;
-        color: #4B5563;
+        color: #94A3B8;
     }
     .metric-trend {
         font-size: 14px;
         padding-top: 5px;
     }
     .metric-trend-up {
-        color: #047857;
+        color: #10B981;
     }
     .metric-trend-down {
-        color: #B91C1C;
+        color: #EF4444;
     }
     .footer {
         margin-top: 50px;
         text-align: center;
-        color: #6B7280;
+        color: #94A3B8;
         font-size: 14px;
         padding: 20px;
-        border-top: 1px solid #E5E7EB;
+        border-top: 1px solid #334166;
     }
     .stTabs [data-baseweb="tab-list"] {
         gap: 8px;
@@ -148,44 +150,47 @@ st.markdown("""
     .stTabs [data-baseweb="tab"] {
         height: 50px;
         white-space: pre-wrap;
-        background-color: #F3F4F6;
+        background-color: #1E293B;
         border-radius: 4px 4px 0px 0px;
         gap: 1px;
         padding-top: 10px;
         padding-bottom: 10px;
+        color: white;
     }
     .stTabs [aria-selected="true"] {
-        background-color: #DBEAFE;
+        background-color: #1E40AF;
         border-radius: 4px 4px 0px 0px;
+        color: white;
     }
     .dashboard-card {
         padding: 20px;
         border-radius: 8px;
-        background-color: white;
-        border: 1px solid #E5E7EB;
+        background-color: #1F2A3F;
+        border: 1px solid #334166;
         box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
         margin-bottom: 20px;
     }
     .stDataFrame {
         border-radius: 8px;
-        border: 1px solid #E5E7EB;
+        border: 1px solid #334166;
     }
     .stProgress > div > div {
-        background-color: #DBEAFE;
+        background-color: #1E40AF;
     }
     div[data-testid="stExpander"] {
         border-radius: 8px;
-        border: 1px solid #E5E7EB;
+        border: 1px solid #334166;
     }
     div[data-testid="stExpander"] > div[role="button"] {
-        background-color: #F3F4F6;
+        background-color: #1E293B;
+        color: white;
     }
     div[data-testid="stExpander"] > div[role="button"]:hover {
-        background-color: #DBEAFE;
+        background-color: #1E40AF;
     }
     .download-btn {
         display: inline-block;
-        background-color: #3B82F6;
+        background-color: #1E40AF;
         color: white;
         padding: 8px 16px;
         text-decoration: none;
@@ -194,7 +199,27 @@ st.markdown("""
         margin: 10px 0;
     }
     .download-btn:hover {
-        background-color: #2563EB;
+        background-color: #1E3A8A;
+    }
+    /* Improve text contrast for dark mode */
+    p, li, span, label, div {
+        color: white !important;
+    }
+    h1, h2, h3, h4, h5 {
+        color: white !important;
+    }
+    .stButton > button {
+        background-color: #1E40AF;
+        color: white;
+        border: none;
+    }
+    .stButton > button:hover {
+        background-color: #1E3A8A;
+    }
+    /* Fix select box and number input contrast */
+    .stSelectbox > div > div, .stNumberInput > div > div {
+        background-color: #1E293B !important;
+        color: white !important;
     }
 </style>
 """, unsafe_allow_html=True)
@@ -223,6 +248,8 @@ if 'dashboard_data' not in st.session_state:
     st.session_state.dashboard_data = {}
 if 'active_tab' not in st.session_state:
     st.session_state.active_tab = "Upload"
+if 'phase_info' not in st.session_state:
+    st.session_state.phase_info = []
 
 # Helper functions
 def log_process(message, level="info"):
@@ -233,6 +260,9 @@ def log_process(message, level="info"):
         "message": message,
         "level": level
     })
+    
+    # Also print to console for debugging
+    print(f"[{level.upper()}] {timestamp}: {message}")
 
 def extract_excel_date(excel_date):
     """Convert Excel date number to Python datetime"""
@@ -354,25 +384,10 @@ def identify_collection_sheet(workbook):
 
 def parse_sales_master(sheet):
     """Parse the Annex - Sales Master sheet and return a DataFrame"""
-    # Find header row - look for key column names
-    header_row = None
-    header_cols = {}
+    # For Annex - Sales Master, header is always in row 1
+    header_row = 1
     
-    for r_idx, row in enumerate(sheet.iter_rows(min_row=1, max_row=10, values_only=True)):
-        col_matches = 0
-        for c_idx, cell in enumerate(row):
-            if cell and isinstance(cell, str):
-                cell_lower = cell.lower()
-                if any(key in cell_lower for key in ['sr no', 'customer', 'unit', 'tower', 'booking']):
-                    col_matches += 1
-        
-        if col_matches >= 3:  # Found at least 3 key columns
-            header_row = r_idx + 1
-            break
-    
-    if header_row is None:
-        log_process("Could not find header row in Sales Master sheet", "error")
-        return None
+    log_process(f"Parsing Sales Master sheet with header row {header_row}", "info")
     
     # Map column indices to expected column names
     header_values = list(sheet.iter_rows(min_row=header_row, max_row=header_row, values_only=True))[0]
@@ -383,10 +398,10 @@ def parse_sales_master(sheet):
         if header:
             header_str = str(header).lower()
             
-            # Map variations to standard names
-            if any(term in header_str for term in ['sr', 'serial']):
+            # More specific matching to avoid misidentification
+            if 'sr' in header_str or 'serial' in header_str:
                 column_mapping[idx] = 'Sr No'
-            elif 'customer' in header_str or 'name' in header_str:
+            elif ('customer' in header_str and 'name' in header_str) or header_str == 'name of customer':
                 column_mapping[idx] = 'Name of Customer'
             elif 'unit' in header_str and 'number' in header_str:
                 column_mapping[idx] = 'Unit Number'
@@ -412,7 +427,7 @@ def parse_sales_master(sheet):
                 column_mapping[idx] = 'BSP/SqFt'
             elif ('basic' in header_str and 'price' in header_str) or ('basic' in header_str and 'exl' in header_str):
                 column_mapping[idx] = 'Basic Price ( Exl Taxes)'
-            elif 'received' in header_str and ('amount' in header_str or 'amt' in header_str) and not 'tax' in header_str and not ('inc' in header_str):
+            elif 'received' in header_str and ('amount' in header_str or 'amt' in header_str) and not 'tax' in header_str and not 'inc' in header_str:
                 column_mapping[idx] = 'Amount received ( Exl Taxes)'
             elif 'tax' in header_str and 'received' in header_str:
                 column_mapping[idx] = 'Taxes Received'
@@ -422,14 +437,15 @@ def parse_sales_master(sheet):
                 column_mapping[idx] = 'Balance receivables (Total Sale Consideration )'
             elif 'broker' in header_str and 'name' in header_str:
                 column_mapping[idx] = 'Broker Name'
-            elif 'co' in header_str and 'applicant' in header_str:
+            elif ('co' in header_str and 'applicant' in header_str) or ('co-applicant' in header_str):
                 column_mapping[idx] = 'CO-APPLICANT NAME'
-            else:
+            elif header_str:
                 # Keep original header for other columns
-                column_mapping[idx] = header
+                column_mapping[idx] = str(header)
     
-    # Log the column mapping for debugging
-    log_process(f"Found {len(column_mapping)} columns in Sales Master sheet")
+    # Log the identified columns for debugging
+    column_info = [(idx, column_mapping[idx]) for idx in column_mapping]
+    log_process(f"Sales Master columns mapped: {column_info}", "info")
     
     # Read data into a DataFrame
     data = []
@@ -446,7 +462,28 @@ def parse_sales_master(sheet):
         # Only add rows with unit number or customer name
         if ('Unit Number' in row_data and row_data['Unit Number']) or \
            ('Name of Customer' in row_data and row_data['Name of Customer']):
+            # Ensure customer name is never empty - NEVER use broker name
+            if 'Name of Customer' not in row_data or not row_data['Name of Customer']:
+                row_data['Name of Customer'] = 'Unknown Customer'
+            
+            # Convert financial columns to floats
+            for col in ['Basic Price ( Exl Taxes)', 'Amount received ( Exl Taxes)', 
+                       'Taxes Received', 'Amount received (Inc Taxes)', 
+                       'Balance receivables (Total Sale Consideration )']:
+                if col in row_data:
+                    try:
+                        if row_data[col] is None or row_data[col] == '':
+                            row_data[col] = 0.0
+                        else:
+                            row_data[col] = float(row_data[col])
+                    except (ValueError, TypeError):
+                        row_data[col] = 0.0
+            
             data.append(row_data)
+    
+    if not data:
+        log_process("No data found in Sales Master sheet", "error")
+        return pd.DataFrame()
     
     df = pd.DataFrame(data)
     
@@ -459,213 +496,113 @@ def parse_sales_master(sheet):
     if 'Unit Number' in df.columns:
         df['Normalized Unit Number'] = df['Unit Number'].apply(normalize_unit_number)
     
-    log_process(f"Processed {len(df)} rows from Sales Master sheet")
+    # Print a sample of the data for debugging
+    log_process(f"Processed {len(df)} rows from Sales Master sheet", "info")
+    if not df.empty:
+        sample_data = df.head(2).to_dict('records')
+        log_process(f"Sample data from Sales Master: {sample_data}", "info")
     
     return df
 
-def find_phase_transitions(sheet):
-    """Find phase transitions in the collection sheet"""
-    phase_transitions = []
+def parse_collection_transactions_with_phase_info(sheet, phase_info):
+    """Parse transactions from collection sheet based on user-provided phase info"""
+    all_transactions = []
     
-    # Get sheet dimensions
-    if not sheet or '!ref' not in sheet:
-        log_process("Invalid sheet or missing reference range", "error")
-        return phase_transitions
+    # For each phase, parse the transactions
+    for phase in phase_info:
+        phase_number = phase['phase_number']
+        header_row = 2 - 1  # Header is always row 2, convert to 0-indexed
+        data_start_row = phase['data_start_row'] - 1  # Convert to 0-indexed
+        account_number = phase['account_number']
         
-    range_ref = sheet['!ref']
-    range_data = openpyxl.utils.range.range_boundaries(range_ref)
-    max_row = range_data[3]  # End row
-    
-    # Scan for phase headers
-    for r in range(min(max_row, 5000)):  # Limit to first 5000 rows for performance
-        # Check first few columns for phase headers
-        for c in range(3):  # Check columns A, B, C
-            cell_ref = f"{openpyxl.utils.get_column_letter(c+1)}{r+1}"
+        # Determine end row (next phase's start or end of sheet)
+        next_phase = next((p for p in phase_info if p['phase_number'] == phase_number + 1), None)
+        end_row = (next_phase['header_row'] - 2) if next_phase else sheet.max_row
+        
+        log_process(f"Processing Phase {phase_number}: rows {data_start_row+1} to {end_row}", "info")
+        
+        # Get column indices from the header row
+        header_indices = {}
+        for c in range(sheet.max_column):
+            cell_ref = f"{openpyxl.utils.get_column_letter(c+1)}{header_row+1}"
             cell = sheet[cell_ref] if cell_ref in sheet else None
             
             if cell and cell.value:
-                cell_value = str(cell.value)
-                if "Main Collection Escrow A/c Phase" in cell_value:
-                    # Look for account number in nearby cells
-                    account_number = None
-                    
-                    # Check same row, next few columns
-                    for ac in range(c, c+5):
-                        if ac < 26:  # Limit to column Z
-                            acct_cell_ref = f"{openpyxl.utils.get_column_letter(ac+1)}{r+1}"
-                            acct_cell = sheet[acct_cell_ref] if acct_cell_ref in sheet else None
-                            
-                            if acct_cell and acct_cell.value and isinstance(acct_cell.value, (int, str)):
-                                acct_value = str(acct_cell.value)
-                                if acct_value.isdigit() and len(acct_value) >= 10:
-                                    account_number = acct_value
-                                    break
-                    
-                    # If not found, check next rows
-                    if not account_number:
-                        for nr in range(r+1, r+5):
-                            if nr < max_row:
-                                for ac in range(5):
-                                    acct_cell_ref = f"{openpyxl.utils.get_column_letter(ac+1)}{nr+1}"
-                                    acct_cell = sheet[acct_cell_ref] if acct_cell_ref in sheet else None
-                                    
-                                    if acct_cell and acct_cell.value and isinstance(acct_cell.value, (int, str)):
-                                        acct_value = str(acct_cell.value)
-                                        if acct_value.isdigit() and len(acct_value) >= 10:
-                                            account_number = acct_value
-                                            break
-                            
-                            if account_number:
-                                break
-                    
-                    # Find the header row (with column names)
-                    header_row = None
-                    for hr in range(r, r+5):
-                        if hr < max_row:
-                            for hc in range(5):
-                                header_cell_ref = f"{openpyxl.utils.get_column_letter(hc+1)}{hr+1}"
-                                header_cell = sheet[header_cell_ref] if header_cell_ref in sheet else None
-                                
-                                if header_cell and header_cell.value and isinstance(header_cell.value, str):
-                                    header_value = str(header_cell.value)
-                                    if "Txn Date" in header_value:
-                                        header_row = hr
-                                        break
-                            
-                            if header_row is not None:
-                                break
-                    
-                    # Add the phase transition
-                    phase_transitions.append({
-                        "row": r + 1,
-                        "name": cell_value,
-                        "account_number": account_number,
-                        "header_row": header_row + 1 if header_row is not None else None
-                    })
-    
-    # For each phase, determine the end row (start of next phase - 1)
-    for i in range(len(phase_transitions)):
-        if i < len(phase_transitions) - 1:
-            phase_transitions[i]["end_row"] = phase_transitions[i+1]["row"] - 1
-        else:
-            phase_transitions[i]["end_row"] = max_row
-    
-    log_process(f"Found {len(phase_transitions)} phase transitions in collection sheet")
-    for phase in phase_transitions:
-        log_process(f"Phase: {phase['name']}, Rows: {phase['row']}-{phase['end_row']}, Account: {phase['account_number']}")
-    
-    return phase_transitions
-
-def identify_account_sections(sheet):
-    """Identify different account sections in the collection sheet"""
-    # Find phase transitions
-    phase_transitions = find_phase_transitions(sheet)
-    
-    # Convert to account info format
-    accounts = []
-    
-    for phase in phase_transitions:
-        if phase["header_row"]:
-            # Get header indices for this phase
-            header_row = phase["header_row"] - 1  # Convert to 0-based
-            header_indices = {}
-            
-            # Map headers to column indices
-            for c in range(min(25, sheet.max_column)):  # Check up to 25 columns
-                cell_ref = f"{openpyxl.utils.get_column_letter(c+1)}{header_row+1}"
-                cell = sheet[cell_ref] if cell_ref in sheet else None
+                header_value = str(cell.value).lower()
                 
-                if cell and cell.value:
-                    header_value = str(cell.value).lower()
-                    
-                    if 'txn date' in header_value:
-                        header_indices['date'] = c
-                    elif 'description' in header_value:
-                        header_indices['description'] = c
-                    elif 'amount' in header_value and 'running' not in header_value:
-                        header_indices['amount'] = c
-                    elif ('dr' in header_value and 'cr' in header_value) or header_value == 'dr/cr':
-                        header_indices['type'] = c
-                    elif 'sales' in header_value and 'tag' in header_value:
-                        header_indices['sales_tag'] = c
-                    elif 'running' in header_value and 'total' in header_value:
-                        header_indices['running_total'] = c
-            
-            account = {
-                'name': phase["name"],
-                'number': phase["account_number"],
-                'start_row': phase["row"],
-                'end_row': phase["end_row"],
-                'header_row': header_row,
-                'header_indices': header_indices
-            }
-            
-            accounts.append(account)
-    
-    return accounts
-
-def parse_collection_transactions(sheet, accounts_info):
-    """Parse transactions from collection sheet based on identified account sections"""
-    all_transactions = []
-    
-    for account in accounts_info:
-        # Get header indices for this account
-        header_indices = account['header_indices']
+                if 'txn date' in header_value:
+                    header_indices['date'] = c
+                elif 'description' in header_value:
+                    header_indices['description'] = c
+                elif 'amount' in header_value and 'running' not in header_value:
+                    header_indices['amount'] = c
+                elif ('dr' in header_value and 'cr' in header_value) or header_value == 'dr/cr':
+                    header_indices['type'] = c
+                elif 'sales' in header_value and 'tag' in header_value:
+                    header_indices['sales_tag'] = c
+        
+        # Log the identified columns
+        log_process(f"Phase {phase_number} column mapping: {header_indices}", "info")
         
         # Skip if we don't have necessary columns
         if 'date' not in header_indices or 'amount' not in header_indices:
-            log_process(f"Missing required columns in account {account['name']}", "warning")
+            log_process(f"Missing required columns in Phase {phase_number}", "warning")
             continue
-        
-        # Read transactions for this account
-        for r_idx in range(account['header_row'] + 1, account.get('end_row', sheet.max_row) + 1):
-            # Skip rows with no data
-            cell_ref = f"{openpyxl.utils.get_column_letter(header_indices['date']+1)}{r_idx+1}"
-            date_cell = sheet[cell_ref] if cell_ref in sheet else None
             
-            cell_ref = f"{openpyxl.utils.get_column_letter(header_indices['amount']+1)}{r_idx+1}"
-            amount_cell = sheet[cell_ref] if cell_ref in sheet else None
+        # Process transactions
+        for r_idx in range(data_start_row, end_row):
+            # Get the amount to check if this is a transaction row
+            amount_cell_ref = f"{openpyxl.utils.get_column_letter(header_indices['amount']+1)}{r_idx+1}"
+            amount_cell = sheet[amount_cell_ref] if amount_cell_ref in sheet else None
             
-            # Skip if date or amount is missing
-            if not date_cell or not date_cell.value or not amount_cell or amount_cell.value is None:
+            # Skip rows without an amount
+            if not amount_cell or amount_cell.value is None or amount_cell.value == "":
                 continue
                 
-            # Only include rows with amount (valid transactions)
-            if isinstance(amount_cell.value, (int, float)) and amount_cell.value != 0:
-                transaction = {
-                    'account_name': account['name'],
-                    'account_number': account['number'],
-                    'row': r_idx + 1
-                }
+            # Skip if not a numeric amount
+            try:
+                amount = float(amount_cell.value)
+                if amount == 0:
+                    continue
+            except (TypeError, ValueError):
+                continue
                 
-                # Extract data based on header indices
-                for field, idx in header_indices.items():
-                    cell_ref = f"{openpyxl.utils.get_column_letter(idx+1)}{r_idx+1}"
-                    cell = sheet[cell_ref] if cell_ref in sheet else None
-                    
-                    if cell and cell.value is not None:
-                        # Special handling for sales_tag and type fields
-                        if field == 'sales_tag':
-                            transaction[field] = str(cell.value) if cell.value is not None else None
-                        elif field == 'type':
-                            transaction[field] = str(cell.value) if cell.value is not None else None
-                        else:
-                            transaction[field] = cell.value
+            # Create transaction record
+            transaction = {
+                'account_name': f"Main Collection Escrow A/c Phase-{phase_number}",
+                'account_number': account_number,
+                'row': r_idx + 1,
+                'phase': phase_number
+            }
+            
+            # Extract data for each column
+            for field, idx in header_indices.items():
+                cell_ref = f"{openpyxl.utils.get_column_letter(idx+1)}{r_idx+1}"
+                cell = sheet[cell_ref] if cell_ref in sheet else None
                 
-                # Convert Excel date to Python datetime
-                if 'date' in transaction:
-                    transaction['date'] = extract_excel_date(transaction['date'])
-                
-                # Add normalized sales tag if present
-                if 'sales_tag' in transaction and transaction['sales_tag']:
-                    transaction['normalized_sales_tag'] = normalize_unit_number(transaction['sales_tag'])
-                
-                all_transactions.append(transaction)
+                if cell and cell.value is not None:
+                    # Special handling for sales_tag and type fields
+                    if field == 'sales_tag':
+                        transaction[field] = str(cell.value) if cell.value is not None else None
+                    elif field == 'type':
+                        transaction[field] = str(cell.value) if cell.value is not None else None
+                    else:
+                        transaction[field] = cell.value
+            
+            # Convert Excel date to Python datetime
+            if 'date' in transaction:
+                transaction['date'] = extract_excel_date(transaction['date'])
+            
+            # Add normalized sales tag if present
+            if 'sales_tag' in transaction and transaction['sales_tag']:
+                transaction['normalized_sales_tag'] = normalize_unit_number(transaction['sales_tag'])
+            
+            all_transactions.append(transaction)
     
     # Convert to DataFrame
     if all_transactions:
         df = pd.DataFrame(all_transactions)
-        log_process(f"Extracted {len(df)} transactions from collection sheet")
+        log_process(f"Extracted {len(df)} transactions from collection sheet", "info")
         return df
     else:
         log_process("No transactions found in collection sheet", "warning")
@@ -674,7 +611,7 @@ def parse_collection_transactions(sheet, accounts_info):
 def match_transactions_to_units(sales_master_df, collection_df):
     """Match transactions to units using robust matching logic"""
     # Check if we have the necessary data
-    if sales_master_df is None or collection_df is None:
+    if sales_master_df is None or collection_df is None or sales_master_df.empty or collection_df.empty:
         log_process("Missing data for transaction matching", "error")
         return {}
     
@@ -691,6 +628,7 @@ def match_transactions_to_units(sales_master_df, collection_df):
     
     # Create mapping dictionary
     unit_to_transactions = {}
+    matched_units = 0
     
     # For each unit in sales master
     for _, unit in sales_master_df.iterrows():
@@ -708,6 +646,7 @@ def match_transactions_to_units(sales_master_df, collection_df):
         direct_matches = collection_df[collection_df['normalized_sales_tag'] == normalized_unit]
         if not direct_matches.empty:
             matches.extend(direct_matches.to_dict('records'))
+            log_process(f"Direct match found for {unit_number}", "info")
         
         # 2. Try matching without CA prefix
         if normalized_unit.startswith('CA'):
@@ -717,10 +656,12 @@ def match_transactions_to_units(sales_master_df, collection_df):
             if not prefix_matches.empty:
                 # Filter out false matches (where the match is a substring of a larger number)
                 for _, match in prefix_matches.iterrows():
+                    # Only add if not already matched
                     if match['normalized_sales_tag'] not in [m['normalized_sales_tag'] for m in matches]:
                         matches.append(match.to_dict())
+                log_process(f"Prefix match found for {unit_number}", "info")
         
-        # 3. Try matching numeric part only
+        # 3. Try matching numeric part only (after the hyphen)
         if '-' in normalized_unit:
             # Get the numeric part after the hyphen
             numeric_part = normalized_unit.split('-')[-1]
@@ -729,14 +670,17 @@ def match_transactions_to_units(sales_master_df, collection_df):
                 if not numeric_matches.empty:
                     # Filter out false matches
                     for _, match in numeric_matches.iterrows():
+                        # Only add if not already matched
                         if match['normalized_sales_tag'] not in [m['normalized_sales_tag'] for m in matches]:
                             matches.append(match.to_dict())
+                    log_process(f"Numeric part match found for {unit_number}", "info")
         
         # Store all matches for this unit
         if matches:
             unit_to_transactions[unit_number] = matches
-    
-    log_process(f"Matched {len(unit_to_transactions)} units with transactions")
+            matched_units += 1
+            
+    log_process(f"Matched {matched_units} units with transactions out of {len(sales_master_df)}", "info")
     return unit_to_transactions
 
 def verify_transactions(sales_master_df, collection_df):
@@ -811,10 +755,19 @@ def verify_transactions(sales_master_df, collection_df):
         # Tolerance of 1 rupee for floating point discrepancies
         amount_match = abs(actual_amount - expected_amount) <= 1
         
-        status = "verified" if amount_match and not bounced_transactions else "warning"
-        
-        if unit_transactions and not amount_match:
-            status = "error"
+        if unit_transactions:
+            if amount_match and not bounced_transactions:
+                status = "verified"
+            elif bounced_transactions:
+                status = "warning"
+            else:
+                status = "error"
+        else:
+            # No transactions found
+            if expected_amount == 0:
+                status = "verified"  # No transactions expected
+            else:
+                status = "warning"  # Transactions expected but not found
         
         verification_results[unit_number] = {
             'unit_number': unit_number,
@@ -1062,6 +1015,7 @@ def generate_cost_sheet_excel(cost_sheet_data):
     # Cost breakdown data
     data_entry_sheet['A15'] = "BASIC SALE PRICE            "
     data_entry_sheet['B15'] = cost_sheet_data['bsp_rate']
+
     data_entry_sheet['C15'] = cost_sheet_data['bsp_amount']
     data_entry_sheet['D15'] = data_entry_sheet['C15'].value / data_entry_sheet['B10'].value if data_entry_sheet['B10'].value else 0
     
@@ -1530,86 +1484,164 @@ if st.session_state.active_tab == "Upload":
     st.markdown('<div class="section-header">Data Processing & Verification</div>', unsafe_allow_html=True)
     
     if uploaded_sales_mis:
-        # Process the uploaded file
-        with st.spinner('Processing Sales MIS Template...'):
-            try:
-                # Load workbook
-                workbook = openpyxl.load_workbook(uploaded_sales_mis, data_only=True)
-                
-                # Identify the relevant sheets
-                sales_master_sheet_name = identify_sales_master_sheet(workbook)
-                collection_sheet_name = identify_collection_sheet(workbook)
-                
-                if not sales_master_sheet_name:
-                    st.error("Could not identify Annex - Sales Master sheet in the uploaded file.")
-                    log_process("Could not identify Annex - Sales Master sheet", "error")
-                elif not collection_sheet_name:
-                    st.error("Could not identify Main Collection sheet in the uploaded file.")
-                    log_process("Could not identify Main Collection sheet", "error")
-                else:
-                    st.success(f"Successfully identified sheets: '{sales_master_sheet_name}' and '{collection_sheet_name}'")
-                    log_process(f"Identified sheets: '{sales_master_sheet_name}' and '{collection_sheet_name}'")
-                    
-                    # Parse Sales Master sheet
-                    sales_master_df = parse_sales_master(workbook[sales_master_sheet_name])
-                    st.session_state.sales_master_df = sales_master_df
-                    
-                    # Identify account sections in collection sheet
-                    accounts_info = identify_account_sections(workbook[collection_sheet_name])
-                    st.session_state.accounts_info = accounts_info
-                    
-                    # Parse collection transactions
-                    collection_df = parse_collection_transactions(workbook[collection_sheet_name], accounts_info)
-                    st.session_state.collection_df = collection_df
-                    
-                    # Verify transactions against customer data
-                    verification_results = verify_transactions(sales_master_df, collection_df)
-                    st.session_state.verification_results = verification_results
-                    
-                    # Calculate dashboard data
-                    dashboard_data = calculate_dashboard_data(sales_master_df, verification_results)
-                    st.session_state.dashboard_data = dashboard_data
-                    
-                    # Show summary
-                    st.markdown('<div class="section-header">Verification Summary</div>', unsafe_allow_html=True)
-                    
-                    verified_count = sum(1 for v in verification_results.values() if v['status'] == 'verified')
-                    warning_count = sum(1 for v in verification_results.values() if v['status'] == 'warning')
-                    error_count = sum(1 for v in verification_results.values() if v['status'] == 'error')
-                    
-                    col1, col2, col3 = st.columns(3)
-                    with col1:
-                        st.metric("Verified Units", verified_count, f"{verified_count/len(verification_results)*100:.1f}%")
-                    with col2:
-                        st.metric("Units with Warnings", warning_count, f"{warning_count/len(verification_results)*100:.1f}%")
-                    with col3:
-                        st.metric("Units with Errors", error_count, f"{error_count/len(verification_results)*100:.1f}%")
-                    
-                    # Show accounts found
-                    st.markdown('<div class="section-header">Bank Accounts Identified</div>', unsafe_allow_html=True)
-                    
-                    accounts_df = pd.DataFrame([
-                        {
-                            'Account Name': account['name'],
-                            'Account Number': account['number'],
-                            'Transaction Count': sum(1 for _, txn in collection_df.iterrows() 
-                                                if txn.get('account_number') == account['number'])
-                        }
-                        for account in accounts_info
-                    ])
-                    
-                    st.dataframe(accounts_df, use_container_width=True)
-                    
-                    # Navigate to customer selection
-                    st.success("Data processed successfully! You can now proceed to Customer Selection.")
-                    if st.button("Go to Customer Selection", use_container_width=True):
-                        st.session_state.active_tab = "Customers"
+        # Initialize phase information in session state if not already present
+        if 'phase_info' not in st.session_state:
+            st.session_state.phase_info = []
             
-            except Exception as e:
-                st.error(f"Error processing file: {str(e)}")
-                log_process(f"Error processing file: {str(e)}", "error")
-                import traceback
-                log_process(traceback.format_exc(), "error")
+        # Try to identify sheets first
+        if 'sheets_identified' not in st.session_state:
+            with st.spinner('Identifying sheets in the uploaded file...'):
+                try:
+                    # Load workbook
+                    workbook = openpyxl.load_workbook(uploaded_sales_mis, data_only=True)
+                    
+                    # Identify the relevant sheets
+                    sales_master_sheet_name = identify_sales_master_sheet(workbook)
+                    collection_sheet_name = identify_collection_sheet(workbook)
+                    
+                    if not sales_master_sheet_name:
+                        st.error("Could not identify Annex - Sales Master sheet in the uploaded file.")
+                        log_process("Could not identify Annex - Sales Master sheet", "error")
+                    elif not collection_sheet_name:
+                        st.error("Could not identify Main Collection sheet in the uploaded file.")
+                        log_process("Could not identify Main Collection sheet", "error")
+                    else:
+                        st.success(f"Successfully identified sheets: '{sales_master_sheet_name}' and '{collection_sheet_name}'")
+                        log_process(f"Identified sheets: '{sales_master_sheet_name}' and '{collection_sheet_name}'")
+                        
+                        # Store sheet names in session state
+                        st.session_state.sales_master_sheet_name = sales_master_sheet_name
+                        st.session_state.collection_sheet_name = collection_sheet_name
+                        st.session_state.workbook = workbook
+                        st.session_state.sheets_identified = True
+                except Exception as e:
+                    st.error(f"Error identifying sheets: {str(e)}")
+                    log_process(f"Error identifying sheets: {str(e)}", "error")
+                    
+        # If sheets are identified, proceed to collect phase information or process data
+        if 'sheets_identified' in st.session_state and st.session_state.sheets_identified:
+            workbook = st.session_state.workbook
+            sales_master_sheet_name = st.session_state.sales_master_sheet_name
+            collection_sheet_name = st.session_state.collection_sheet_name
+            
+            # If phase info is not complete, collect it
+            if not st.session_state.phase_info:
+                st.markdown('<div class="subsection-header">Collection Sheet Phase Information</div>', unsafe_allow_html=True)
+                st.markdown('Please provide the row numbers for each phase in the Main Collection sheet.')
+                
+                # Create a form to collect phase information
+                with st.form("phase_info_form"):
+                    phase_count = st.number_input("Number of phases", min_value=1, max_value=5, value=3, step=1)
+                    
+                    phases = []
+                    for i in range(1, phase_count + 1):
+                        st.markdown(f"**Phase {i}**")
+                        col1, col2 = st.columns(2)
+                        
+                        with col1:
+                            phase_header_row = st.number_input(
+                                f"Row number where 'Main Collection Escrow A/c Phase-{i}' appears", 
+                                min_value=1, 
+                                value=1 if i == 1 else (2232 if i == 2 else 3876),
+                                key=f"phase_{i}_header"
+                            )
+                            
+                        with col2:
+                            account_number = st.text_input(
+                                f"Account number for Phase {i}",
+                                value="",
+                                key=f"phase_{i}_account"
+                            )
+                            
+                        data_start_row = st.number_input(
+                            f"Row number where transaction data begins for Phase {i}", 
+                            min_value=phase_header_row + 1,
+                            value=phase_header_row + 2,
+                            key=f"phase_{i}_data_start"
+                        )
+                        
+                        phases.append({
+                            "phase_number": i,
+                            "header_row": phase_header_row,
+                            "account_number": account_number,
+                            "data_start_row": data_start_row
+                        })
+                    
+                    submit_button = st.form_submit_button("Process Data", use_container_width=True)
+                    
+                    if submit_button:
+                        st.session_state.phase_info = phases
+                        st.info("Phase information collected. Processing data...")
+                        
+            # If phase info is complete, process the data
+            if st.session_state.phase_info:
+                with st.spinner('Processing data...'):
+                    try:
+                        # Parse Sales Master sheet (row 1 has headers)
+                        sales_master_df = parse_sales_master(workbook[sales_master_sheet_name])
+                        st.session_state.sales_master_df = sales_master_df
+                        
+                        # Use phase info to parse collection transactions
+                        collection_df = parse_collection_transactions_with_phase_info(
+                            workbook[collection_sheet_name], 
+                            st.session_state.phase_info
+                        )
+                        st.session_state.collection_df = collection_df
+                        
+                        # Verify transactions against customer data
+                        verification_results = verify_transactions(sales_master_df, collection_df)
+                        st.session_state.verification_results = verification_results
+                        
+                        # Calculate dashboard data
+                        dashboard_data = calculate_dashboard_data(sales_master_df, verification_results)
+                        st.session_state.dashboard_data = dashboard_data
+                        
+                        # Show summary
+                        st.markdown('<div class="section-header">Verification Summary</div>', unsafe_allow_html=True)
+                        
+                        verified_count = sum(1 for v in verification_results.values() if v['status'] == 'verified')
+                        warning_count = sum(1 for v in verification_results.values() if v['status'] == 'warning')
+                        error_count = sum(1 for v in verification_results.values() if v['status'] == 'error')
+                        
+                        col1, col2, col3 = st.columns(3)
+                        with col1:
+                            st.metric("Verified Units", verified_count, f"{verified_count/len(verification_results)*100:.1f}%")
+                        with col2:
+                            st.metric("Units with Warnings", warning_count, f"{warning_count/len(verification_results)*100:.1f}%")
+                        with col3:
+                            st.metric("Units with Errors", error_count, f"{error_count/len(verification_results)*100:.1f}%")
+                        
+                        # Show accounts found
+                        st.markdown('<div class="section-header">Bank Accounts Identified</div>', unsafe_allow_html=True)
+                        
+                        # Group transactions by account
+                        if not collection_df.empty and 'account_number' in collection_df.columns:
+                            account_groups = collection_df.groupby('account_number').size().reset_index(name='Transaction Count')
+                            
+                            # Add account names from phase info
+                            account_groups['Account Name'] = account_groups['account_number'].apply(
+                                lambda acc: next((f"Main Collection Escrow A/c Phase-{p['phase_number']}" 
+                                                for p in st.session_state.phase_info 
+                                                if p['account_number'] == acc), "Unknown")
+                            )
+                            
+                            accounts_df = account_groups[['Account Name', 'account_number', 'Transaction Count']]
+                            accounts_df.columns = ['Account Name', 'Account Number', 'Transaction Count']
+                            
+                            st.dataframe(accounts_df, use_container_width=True)
+                        else:
+                            st.warning("No transaction data found in the collection sheet.")
+                        
+                        # Navigate to customer selection
+                        st.success("Data processed successfully! You can now proceed to Customer Selection.")
+                        if st.button("Go to Customer Selection", use_container_width=True):
+                            st.session_state.active_tab = "Customers"
+                            
+                    except Exception as e:
+                        st.error(f"Error processing data: {str(e)}")
+                        log_process(f"Error processing data: {str(e)}", "error")
+                        import traceback
+                        log_process(traceback.format_exc(), "error")
     else:
         st.info("Please upload the Sales MIS Template Excel file to start.")
         st.markdown("""
@@ -1619,7 +1651,8 @@ if st.session_state.active_tab == "Upload":
             <ol>
                 <li>Upload the Sales MIS Template Excel file containing the Annex - Sales Master and Main Collection sheets.</li>
                 <li>Optionally upload a NOC Document Template if you need to generate NOC documents.</li>
-                <li>The application will automatically process the data and identify accounts and transactions.</li>
+                <li>Provide information about the phase sections in the Main Collection sheet.</li>
+                <li>The application will process the data and match transactions to units.</li>
                 <li>Select the units you want to generate cost sheets for.</li>
                 <li>Generate and download the cost sheets and NOC documents.</li>
             </ol>
@@ -1731,19 +1764,18 @@ elif st.session_state.active_tab == "Customers":
         # Show selection summary
         st.markdown(f"<div class='info-box'>Selected {len(st.session_state.selected_customers)} customers for cost sheet generation</div>", unsafe_allow_html=True)
         
-        # Show detailed verification for selected customers
+        # Display cost sheet preview for all selected customers in a tabbed interface
         if st.session_state.selected_customers:
-            st.markdown('<div class="section-header">Verification Details</div>', unsafe_allow_html=True)
+            st.markdown('<div class="section-header">Cost Sheet Preview</div>', unsafe_allow_html=True)
             
-            # Create tabs for each selected customer
-            tabs = st.tabs([f"{unit_no}" for unit_no in st.session_state.selected_customers])
+            selected_tabs = st.tabs([f"{unit_no}" for unit_no in st.session_state.selected_customers])
             
-            for i, tab in enumerate(tabs):
+            for i, tab in enumerate(selected_tabs):
                 unit_no = st.session_state.selected_customers[i]
                 verification = st.session_state.verification_results.get(unit_no, {})
                 
                 with tab:
-                    col1, col2 = st.columns(2)
+                    col1, col2 = st.columns([1, 2])
                     
                     with col1:
                         st.markdown('<div class="subsection-header">Customer Information</div>', unsafe_allow_html=True)
@@ -1758,24 +1790,107 @@ elif st.session_state.active_tab == "Customers":
                             st.write(f"**Tower:** {customer_row.iloc[0].get('Tower No', 'N/A')}")
                             st.write(f"**Booking Date:** {customer_row.iloc[0].get('Booking date', 'N/A')}")
                             st.write(f"**Payment Plan:** {customer_row.iloc[0].get('Payment Plan', 'N/A')}")
+                        
+                        # Verification section
+                        st.markdown('<div class="subsection-header">Collection Verification</div>', unsafe_allow_html=True)
+                        
+                        # Create a comparison table for Annex vs Main Collection
+                        comparison_df = pd.DataFrame([
+                            {"Source": "Annex Data", "Amount (Excl Tax)": verification.get('expected_base_amount', 0), 
+                             "Tax": verification.get('expected_tax_amount', 0), 
+                             "Total": verification.get('expected_amount', 0)},
+                            {"Source": "Main Collection", "Amount (Excl Tax)": verification.get('actual_amount', 0), 
+                             "Tax": 0,  # We don't track tax separately in Main Collection
+                             "Total": verification.get('actual_amount', 0)}
+                        ])
+                        
+                        st.dataframe(comparison_df, use_container_width=True)
+                        
+                        # Status indicator
+                        status = verification.get('status', 'unknown')
+                        difference = verification.get('expected_amount', 0) - verification.get('actual_amount', 0)
+                        
+                        if status == 'verified':
+                            st.success("✅ Collections Match")
+                        elif status == 'warning':
+                            st.warning(f"⚠️ Collection Warning (Difference: ₹{difference:,.2f})")
+                        else:
+                            st.error(f"❌ Collections Don't Match (Difference: ₹{difference:,.2f})")
                     
                     with col2:
-                        st.markdown('<div class="subsection-header">Payment Verification</div>', unsafe_allow_html=True)
-                        st.write(f"**Expected Amount:** ₹{verification.get('expected_amount', 0):,.2f}")
-                        st.write(f"**Actual Amount:** ₹{verification.get('actual_amount', 0):,.2f}")
+                        # Generate cost sheet data for this customer
+                        customer_info = st.session_state.sales_master_df[
+                            st.session_state.sales_master_df['Unit Number'] == unit_no
+                        ].iloc[0]
                         
-                        difference = verification.get('expected_amount', 0) - verification.get('actual_amount', 0)
-                        st.write(f"**Difference:** ₹{difference:,.2f}")
+                        cost_sheet_data = generate_cost_sheet_data(customer_info, verification)
+                        st.session_state.preview_data[unit_no] = cost_sheet_data
                         
-                        status = verification.get('status', 'unknown')
-                        if status == 'verified':
-                            st.success("✅ Payments Verified")
-                        elif status == 'warning':
-                            st.warning("⚠️ Verification Warning")
-                        else:
-                            st.error("❌ Verification Failed")
-                    
-                    # Show transactions
+                        # Display the cost sheet preview
+                        if cost_sheet_data:
+                            st.markdown('<div class="subsection-header">Cost Sheet Details</div>', unsafe_allow_html=True)
+                            
+                            # Customer and Unit details
+                            st.markdown("##### Unit & Customer Details")
+                            details1_cols = st.columns(3)
+                            with details1_cols[0]:
+                                st.metric("Tower", cost_sheet_data.get('tower', 'N/A'))
+                            with details1_cols[1]:
+                                st.metric("Unit Number", cost_sheet_data.get('unit_number', 'N/A'))
+                            with details1_cols[2]:
+                                st.metric("Floor", cost_sheet_data.get('floor_number', 'N/A'))
+                            
+                            details2_cols = st.columns(2)
+                            with details2_cols[0]:
+                                st.metric("Super Area", f"{cost_sheet_data.get('super_area', 0):,.2f} sq.ft.")
+                            with details2_cols[1]:
+                                st.metric("Carpet Area", f"{cost_sheet_data.get('carpet_area', 0):,.2f} sq.ft.")
+                            
+                            # Financial summary
+                            st.markdown("##### Financial Summary")
+                            finance_cols = st.columns(2)
+                            with finance_cols[0]:
+                                st.metric("Basic Price", f"₹{cost_sheet_data.get('bsp_amount', 0):,.2f}")
+                                st.metric("IFMS", f"₹{cost_sheet_data.get('ifms_amount', 0):,.2f}")
+                                st.metric("Annual Maintenance", f"₹{cost_sheet_data.get('amc_amount', 0):,.2f}")
+                                st.metric("Total Consideration", f"₹{cost_sheet_data.get('total_consideration', 0):,.2f}")
+                            with finance_cols[1]:
+                                st.metric("GST on Basic Price", f"₹{cost_sheet_data.get('gst_amount', 0):,.2f}")
+                                st.metric("GST on AMC", f"₹{cost_sheet_data.get('amc_gst_amount', 0):,.2f}")
+                                total_taxes = cost_sheet_data.get('gst_amount', 0) + cost_sheet_data.get('amc_gst_amount', 0)
+                                st.metric("Total Taxes", f"₹{total_taxes:,.2f}")
+                                grand_total = cost_sheet_data.get('total_consideration', 0) + total_taxes
+                                st.metric("Grand Total", f"₹{grand_total:,.2f}")
+                            
+                            # Payment status
+                            st.markdown("##### Payment Status")
+                            payment_cols = st.columns(3)
+                            with payment_cols[0]:
+                                st.metric("Amount Received", f"₹{cost_sheet_data.get('amount_received', 0):,.2f}")
+                            with payment_cols[1]:
+                                st.metric("Balance Receivable", f"₹{cost_sheet_data.get('balance_receivable', 0):,.2f}")
+                            with payment_cols[2]:
+                                if cost_sheet_data.get('total_consideration', 0) > 0:
+                                    payment_pct = (cost_sheet_data.get('amount_received', 0) / cost_sheet_data.get('total_consideration', 0)) * 100
+                                else:
+                                    payment_pct = 0
+                                st.metric("Completion", f"{payment_pct:.1f}%")
+                            
+                            # Tax status
+                            tax_cols = st.columns(3)
+                            with tax_cols[0]:
+                                st.metric("GST Received", f"₹{cost_sheet_data.get('gst_received', 0):,.2f}")
+                            with tax_cols[1]:
+                                gst_balance = total_taxes - cost_sheet_data.get('gst_received', 0)
+                                st.metric("Balance GST", f"₹{gst_balance:,.2f}")
+                            with tax_cols[2]:
+                                if total_taxes > 0:
+                                    gst_pct = (cost_sheet_data.get('gst_received', 0) / total_taxes) * 100
+                                else:
+                                    gst_pct = 0
+                                st.metric("GST Completion", f"{gst_pct:.1f}%")
+                                
+                    # Transactions section
                     st.markdown('<div class="subsection-header">Transactions</div>', unsafe_allow_html=True)
                     transactions = verification.get('transactions', [])
                     
@@ -1800,134 +1915,7 @@ elif st.session_state.active_tab == "Customers":
                         st.markdown('<div class="subsection-header">Potential Bounced Transactions</div>', unsafe_allow_html=True)
                         bounced_df = pd.DataFrame(bounced)
                         st.dataframe(bounced_df, use_container_width=True)
-                    
-                    # Generate preview data for this customer
-                    customer_info = st.session_state.sales_master_df[
-                        st.session_state.sales_master_df['Unit Number'] == unit_no
-                    ].iloc[0]
-                    
-                    cost_sheet_data = generate_cost_sheet_data(customer_info, verification)
-                    st.session_state.preview_data[unit_no] = cost_sheet_data
-                    
-                    # Preview button
-                    if st.button(f"Preview Cost Sheet for {unit_no}", key=f"preview_{unit_no}"):
-                        preview_data = st.session_state.preview_data.get(unit_no)
-                        
-                        if preview_data:
-                            st.markdown('<div class="subsection-header">Cost Sheet Preview</div>', unsafe_allow_html=True)
-                            
-                            preview_tabs = st.tabs(["Data Entry", "Bank Credit Details", "Sales NOC SWAMIH"])
-                            
-                            with preview_tabs[0]:
-                                st.write("**COST SHEET**")
-                                
-                                col1, col2 = st.columns(2)
-                                with col1:
-                                    st.write("**Customer Information**")
-                                    st.write(f"**APPLICANT NAME:** {preview_data.get('customer_name')}")
-                                    st.write(f"**CO-APPLICANT NAME:** {preview_data.get('co_applicant', 'N/A')}")
-                                    st.write(f"**BOOKING DATE:** {preview_data.get('booking_date')}")
-                                    st.write(f"**PAYMENT PLAN:** {preview_data.get('payment_plan')}")
-                                
-                                with col2:
-                                    st.write("**Unit Information**")
-                                    st.write(f"**TOWER:** {preview_data.get('tower')}")
-                                    st.write(f"**UNIT NO:** {preview_data.get('unit_number')}")
-                                    st.write(f"**FLOOR NUMBER:** {preview_data.get('floor_number')}")
-                                    st.write(f"**SUPER AREA:** {preview_data.get('super_area')} sq.ft.")
-                                    st.write(f"**CARPET AREA:** {preview_data.get('carpet_area')} sq.ft.")
-                                
-                                st.write("**Cost Breakdown**")
-                                cost_df = pd.DataFrame([
-                                    {"Particulars": "BASIC SALE PRICE", "Rate": preview_data.get('bsp_rate'), 
-                                     "Amount": preview_data.get('bsp_amount')},
-                                    {"Particulars": "IFMS", "Rate": preview_data.get('ifms_rate'), 
-                                     "Amount": preview_data.get('ifms_amount')},
-                                    {"Particulars": "1 Year Annual Maintenance Charge", "Rate": preview_data.get('amc_rate'), 
-                                     "Amount": preview_data.get('amc_amount')},
-                                    {"Particulars": "Total Sale Consideration", "Rate": "", 
-                                     "Amount": preview_data.get('total_consideration')},
-                                    {"Particulars": "GST AMOUNT (5%)", "Rate": "", 
-                                     "Amount": preview_data.get('gst_amount')},
-                                    {"Particulars": "AMC GST (18%)", "Rate": "", 
-                                     "Amount": preview_data.get('amc_gst_amount')},
-                                    {"Particulars": "GRAND TOTAL", "Rate": "", 
-                                     "Amount": preview_data.get('total_consideration') + 
-                                             preview_data.get('gst_amount') + 
-                                             preview_data.get('amc_gst_amount')}
-                                ])
-                                st.dataframe(cost_df, use_container_width=True)
-                                
-                                st.write("**Receipt Details**")
-                                receipt_df = pd.DataFrame([
-                                    {"Detail": "Amount Received", "Value": preview_data.get('amount_received')},
-                                    {"Detail": "BALANCE RECEIVABLE", "Value": preview_data.get('balance_receivable')},
-                                    {"Detail": "GST received", "Value": preview_data.get('gst_received')},
-                                    {"Detail": "BALANCE GST RECEIVABLE", "Value": preview_data.get('gst_amount') - 
-                                                                                preview_data.get('gst_received')}
-                                ])
-                                st.dataframe(receipt_df, use_container_width=True)
-                            
-                            with preview_tabs[1]:
-                                st.write("**Bank Credit Details**")
-                                
-                                transactions = preview_data.get('transactions', [])
-                                credit_transactions = [t for t in transactions if t.get('type') == 'C']
-                                
-                                if credit_transactions:
-                                    bank_df = pd.DataFrame([
-                                        {
-                                            "Date": txn.get('date'),
-                                            "Amount received": txn.get('amount'),
-                                            "Bank A/c Name": txn.get('account_name'),
-                                            "Bank A/c No": txn.get('account_number'),
-                                            "Bank statement verified": "Yes"
-                                        }
-                                        for txn in credit_transactions
-                                    ])
-                                    
-                                    # Add total row
-                                    bank_df.loc[len(bank_df)] = {
-                                        "Date": "Total Sum received",
-                                        "Amount received": bank_df["Amount received"].sum(),
-                                        "Bank A/c Name": "",
-                                        "Bank A/c No": "",
-                                        "Bank statement verified": ""
-                                    }
-                                    
-                                    st.dataframe(bank_df, use_container_width=True)
-                                else:
-                                    st.info("No credit transactions found for this unit.")
-                            
-                            with preview_tabs[2]:
-                                st.write("**Sales NOC SWAMIH**")
-                                
-                                noc_df = pd.DataFrame([
-                                    {"Particulars": "Flat/Unit No.", "Details": preview_data.get('unit_number')},
-                                    {"Particulars": "Floor No.", "Details": preview_data.get('floor_number')},
-                                    {"Particulars": "Building Name", "Details": preview_data.get('tower')},
-                                    {"Particulars": "Carpet Area of the Flat / Unit (Sq.Ft.)", 
-                                     "Details": preview_data.get('carpet_area')},
-                                    {"Particulars": "Name of the Applicant (Purchaser)", 
-                                     "Details": preview_data.get('customer_name')},
-                                    {"Particulars": "Name of the Co-Applicant (Co- Purchaser)", 
-                                     "Details": preview_data.get('co_applicant', 'N/A')},
-                                    {"Particulars": "Total Sale Consideration (including parking charges) (Excl. GST)", 
-                                     "Details": preview_data.get('total_consideration')},
-                                    {"Particulars": "Total GST", 
-                                     "Details": preview_data.get('gst_amount') + preview_data.get('amc_gst_amount')},
-                                    {"Particulars": "Sale Consideration Amount Received as on date (Excl. GST)", 
-                                     "Details": preview_data.get('amount_received')},
-                                    {"Particulars": "GST Amount received as on date", 
-                                     "Details": preview_data.get('gst_received')},
-                                    {"Particulars": "Balance Amount yet to be received (excluding taxes)", 
-                                     "Details": preview_data.get('balance_receivable')},
-                                    {"Particulars": "Booking Date", "Details": preview_data.get('booking_date')},
-                                    {"Particulars": "Home loan taken from", "Details": preview_data.get('home_loan')},
-                                ])
-                                
-                                st.dataframe(noc_df, use_container_width=True)
-                    
+            
             # Generate button to go to generation page
             if st.button("Generate Cost Sheets for Selected Customers", use_container_width=True):
                 st.session_state.active_tab = "Generate"
@@ -2049,12 +2037,16 @@ elif st.session_state.active_tab == "Dashboard":
                 y=['Amount Received', 'Total Consideration'],
                 title='Collection by Tower',
                 labels={'value': 'Amount (₹)', 'Tower': 'Tower', 'variable': 'Category'},
-                barmode='overlay'
+                barmode='overlay',
+                color_discrete_sequence=['#3B82F6', '#93C5FD']
             )
             
             fig.update_layout(
                 legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
-                height=400
+                height=400,
+                plot_bgcolor='rgba(0,0,0,0)',
+                paper_bgcolor='rgba(0,0,0,0)',
+                font=dict(color='white')
             )
             
             st.plotly_chart(fig, use_container_width=True)
@@ -2092,11 +2084,17 @@ elif st.session_state.active_tab == "Dashboard":
                 dist_df,
                 values='Count',
                 names='Range',
-                title='Collection Completion Distribution'
+                title='Collection Completion Distribution',
+                color_discrete_sequence=px.colors.sequential.Blues_r
             )
             
             fig.update_traces(textposition='inside', textinfo='percent+label')
-            fig.update_layout(height=400)
+            fig.update_layout(
+                height=400,
+                plot_bgcolor='rgba(0,0,0,0)',
+                paper_bgcolor='rgba(0,0,0,0)',
+                font=dict(color='white')
+            )
             
             st.plotly_chart(fig, use_container_width=True)
         
@@ -2127,12 +2125,13 @@ elif st.session_state.active_tab == "Dashboard":
         
         # Show dataframe with status indicators
         st.dataframe(
-            all_units_df.style.applymap(
-                lambda x: 'background-color: #D1FAE5' if x == 'verified' else
-                         ('background-color: #FEF3C7' if x == 'warning' else
-                          'background-color: #FEE2E2'),
-                subset=['Status']
-            ),
+            all_units_df,
+            column_config={
+                "Status": st.column_config.TextColumn(
+                    "Status",
+                    help="Verification status"
+                )
+            },
             use_container_width=True
         )
         
@@ -2227,6 +2226,7 @@ elif st.session_state.active_tab == "Generate":
                             zip_data = f.read()
                         
                         st.success(f"Successfully generated {len(cost_sheet_files)} cost sheets and {len(noc_files)} NOC documents.")
+
                         st.download_button(
                             label="Download All Files (ZIP)",
                             data=zip_data,
