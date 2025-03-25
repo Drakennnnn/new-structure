@@ -4,4 +4,6 @@ numpy
 openpyxl
 python-docx
 docxtpl
-Pillow
+plotly
+python-dateutil
+pytz
